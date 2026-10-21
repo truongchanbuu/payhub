@@ -1,11 +1,22 @@
 import test from 'node:test';
+import express from 'express';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
 
 const config = { payhubToken: 'test-payhub-secret', adminKey: 'test-admin-secret' };
 const payload = { merchantRef: 'RR-2610-00015', orderNumber: '00012345', amount: 1992000, currency: 'VND', reason: 'CUSTOMER_RETURN' };
 async function setup(t, options = {}) {
-  const app = createApp({ ...config, timeoutMs: 80, ...options });
+  const received = [];
+  const receiver = express();
+  receiver.use(express.text({ type: 'application/json' }));
+  receiver.post('/callback', (req, res) => {
+    received.push({ raw: req.body, body: JSON.parse(req.body), authorization: req.get('Authorization'), at: performance.now() });
+    if (options.callbackHandler) options.callbackHandler(req, res);
+    else res.sendStatus(204);
+  });
+  const receiverUrl = await serve(t, receiver);
+  const app = createApp({ ...config, timeoutMs: 80, callbackUrl: `${receiverUrl}/callback`,
+    callbackToken: 'salesforce-private-token', ...options });
   t.after(() => app.locals.dispose());
   const url = await serve(t, app);
   const request = async (headers = {}, body = payload) => {
@@ -13,7 +24,7 @@ async function setup(t, options = {}) {
     return { code: response.status, body: await response.json() };
   };
   const trace = async (testId = 'default') => (await fetch(`${url}/__mock/attempts?testId=${testId}`, { headers: { 'X-Admin-Key': config.adminKey } })).json();
-  return { url, request, trace };
+  return { url, request, trace, received };
 }
 
 export async function serve(t, app) {
@@ -218,4 +229,91 @@ test('X-Mock-Delay-Ms delays response but acceptance remains atomic', async t =>
   assert.equal(response.code, 200);
   assert.ok(performance.now() - start >= 35);
   assert.ok((await trace()).attempts[0].durationMs >= 35);
+});
+
+
+for (const scenario of ['PENDING_SUCCESS', 'PENDING_FAILED', 'DUPLICATE_CALLBACK']) {
+  test(`${scenario} delivers authenticated final callbacks once per acceptance`, async t => {
+    const { request, trace, received } = await setup(t);
+    const started = performance.now();
+    const pending = await request({ 'X-Mock-Scenario': scenario, 'X-Mock-Callback-Delay-Ms': '40' });
+    assert.equal(pending.body.status, 'PENDING');
+    const count = scenario === 'DUPLICATE_CALLBACK' ? 2 : 1;
+    await waitFor(async () => (await trace()).callbackAttempts.filter(x => x.outcome === 'DELIVERED').length === count);
+    assert.equal(received.length, count);
+    const status = scenario === 'PENDING_FAILED' ? 'FAILED' : 'SUCCESS';
+    for (const callback of received) {
+      assert.equal(callback.authorization, 'Bearer salesforce-private-token');
+      assert.equal(callback.body.refundId, pending.body.refundId);
+      assert.equal(callback.body.merchantRef, payload.merchantRef);
+      assert.equal(callback.body.status, status);
+      assert.ok(Date.parse(callback.body.processedAt));
+      assert.ok(callback.at - started >= 35);
+      assert.deepEqual(Object.keys(callback.body).sort(), ['refundId', 'merchantRef', 'status', 'processedAt', ...(status === 'FAILED' ? ['failureReason'] : [])].sort());
+      if (status === 'FAILED') assert.equal(callback.body.failureReason, 'CARD_CLOSED');
+    }
+    if (count === 2) assert.equal(received[0].raw, received[1].raw);
+    assert.deepEqual(await request({ 'X-Mock-Scenario': 'SUCCESS' }), pending);
+    assert.deepEqual(await request({ 'Idempotency-Key': 'second-key' }), pending);
+    const log = await trace();
+    assert.equal(log.acceptedCount, 1);
+    assert.equal(log.refunds[0].finalStatus, status);
+    assert.equal(log.callbackAttempts.length, count);
+    for (const callback of log.callbackAttempts) {
+      assert.equal(callback.responseCode, 204);
+      assert.ok(callback.durationMs >= 0);
+      assert.ok(Date.parse(callback.finishedAt));
+    }
+    for (const secret of ['salesforce-private-token', payload.merchantRef, payload.orderNumber]) {
+      assert.ok(!JSON.stringify(log).includes(secret));
+    }
+  });
+}
+
+test('callback HTTP errors and sensitive response bodies are recorded safely', async t => {
+  const { request, trace } = await setup(t, { callbackHandler: (_req, res) => res.status(401).send('salesforce-private-token private-error-body') });
+  await request({ 'X-Mock-Scenario': 'PENDING_SUCCESS', 'X-Mock-Callback-Delay-Ms': '0' });
+  await waitFor(async () => (await trace()).callbackAttempts[0]?.outcome === 'HTTP_ERROR');
+  const log = await trace();
+  assert.equal(log.callbackAttempts[0].responseCode, 401);
+  assert.ok(!JSON.stringify(log).includes('salesforce-private-token'));
+  assert.ok(!JSON.stringify(log).includes('private-error-body'));
+});
+
+test('callback redirects are never followed', async t => {
+  let redirected = 0;
+  const destination = express();
+  destination.all('/leak', (_req, res) => { redirected += 1; res.sendStatus(204); });
+  const target = await serve(t, destination);
+  const { request, trace } = await setup(t, { callbackHandler: (_req, res) => res.redirect(307, `${target}/leak`) });
+  await request({ 'X-Mock-Scenario': 'PENDING_SUCCESS', 'X-Mock-Callback-Delay-Ms': '0' });
+  await waitFor(async () => (await trace()).callbackAttempts[0]?.outcome === 'HTTP_ERROR');
+  assert.equal((await trace()).callbackAttempts[0].responseCode, 307);
+  assert.equal(redirected, 0);
+});
+
+test('callback network failures and timeouts do not change accepted response', async t => {
+  for (const callbackHandler of [(_req, res) => res.destroy(), () => {}]) {
+    const { request, trace } = await setup(t, { callbackHandler, callbackTimeoutMs: 30 });
+    const first = await request({ 'X-Mock-Scenario': 'PENDING_SUCCESS', 'X-Mock-Callback-Delay-Ms': '0' });
+    await waitFor(async () => ['NETWORK_ERROR', 'TIMEOUT'].includes((await trace()).callbackAttempts[0]?.outcome));
+    const log = await trace();
+    assert.equal(log.callbackAttempts[0].outcome, callbackHandler.length ? 'NETWORK_ERROR' : 'TIMEOUT');
+    assert.equal(log.callbackAttempts[0].responseCode, null);
+    assert.deepEqual(await request(), first);
+  }
+});
+
+test('PENDING without callback configuration fails before acceptance', async t => {
+  const { request, trace } = await setup(t, { callbackUrl: '', callbackToken: '' });
+  assert.deepEqual(await request({ 'X-Mock-Scenario': 'PENDING_SUCCESS' }), { code: 503, body: { errorCode: 'CALLBACK_NOT_CONFIGURED' } });
+  assert.equal((await trace()).acceptedCount, 0);
+});
+
+test('callback configuration rejects unsafe URLs and missing credentials', () => {
+  for (const callbackUrl of ['http://example.com/callback', 'https://user:pass@example.com', 'file:///tmp/out', 'not-a-url', 'https://example.com/#fragment']) {
+    assert.throws(() => createApp({ ...config, callbackUrl, callbackToken: 'token' }));
+  }
+  assert.throws(() => createApp({ ...config, callbackUrl: 'https://example.com', callbackToken: '' }));
+  assert.throws(() => createApp({ ...config, callbackUrl: '', callbackToken: 'token' }));
 });

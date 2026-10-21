@@ -13,16 +13,30 @@ const validText = (value, max = 200) => typeof value === 'string'
   && value.length > 0 && value.length <= max && value.trim() === value;
 
 export function createApp({ payhubToken = process.env.PAYHUB_TOKEN,
-  adminKey = process.env.ADMIN_KEY, timeoutMs = 11000 } = {}) {
+  adminKey = process.env.ADMIN_KEY, timeoutMs = 11000,
+  callbackUrl = process.env.SALESFORCE_CALLBACK_URL,
+  callbackToken = process.env.SALESFORCE_ACCESS_TOKEN, callbackTimeoutMs = 5000 } = {}) {
   if (!validText(payhubToken) || !validText(adminKey) || payhubToken === adminKey) {
     throw new Error('Distinct PAYHUB_TOKEN and ADMIN_KEY are required');
+  }
+  if (callbackUrl || callbackToken) {
+    let url;
+    try { url = new URL(callbackUrl); } catch { throw new Error('Invalid Salesforce callback configuration'); }
+    const localHttp = url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if ((!localHttp && url.protocol !== 'https:') || url.username || url.password || url.hash
+      || !validText(callbackToken, 4096) || /[\r\n]/.test(callbackToken)) {
+      throw new Error('Invalid Salesforce callback configuration');
+    }
   }
   const app = express();
   const runs = new Map();
   const timers = new Set();
+  const controllers = new Set();
   app.locals.dispose = () => {
     for (const timer of timers) clearTimeout(timer);
     timers.clear();
+    for (const controller of controllers) controller.abort();
+    controllers.clear();
   };
   function send(res, code, body, delayMs = 0) {
     if (!delayMs) return res.status(code).json(body);
@@ -39,6 +53,39 @@ export function createApp({ payhubToken = process.env.PAYHUB_TOKEN,
     if (!/^\d{1,6}$/.test(value) || Number(value) > 120000) return null;
     return Number(value);
   }
+  function scheduleCallbacks(run, record, merchantRef, delayMs) {
+    const timer = setTimeout(async () => {
+      timers.delete(timer);
+      const status = record.scenario === 'PENDING_FAILED' ? 'FAILED' : 'SUCCESS';
+      record.finalStatus = status;
+      const payload = JSON.stringify({ refundId: record.response.refundId, merchantRef, status,
+        processedAt: new Date().toISOString(), ...(status === 'FAILED' ? { failureReason: 'CARD_CLOSED' } : {}) });
+      const count = record.scenario === 'DUPLICATE_CALLBACK' ? 2 : 1;
+      for (let i = 0; i < count; i += 1) {
+        const attempt = { number: run.callbacks.length + 1, refundId: record.response.refundId,
+          status, startedAt: new Date().toISOString(), responseCode: null, outcome: 'IN_FLIGHT' };
+        run.callbacks.push(attempt);
+        const started = performance.now();
+        const controller = new AbortController();
+        controllers.add(controller);
+        try {
+          const response = await fetch(callbackUrl, { method: 'POST', redirect: 'manual',
+            headers: { Authorization: `Bearer ${callbackToken}`, 'Content-Type': 'application/json' },
+            body: payload, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(callbackTimeoutMs)]) });
+          attempt.responseCode = response.status;
+          attempt.outcome = response.ok ? 'DELIVERED' : 'HTTP_ERROR';
+          await response.body?.cancel();
+        } catch (error) {
+          attempt.outcome = error.name === 'TimeoutError' ? 'TIMEOUT' : 'NETWORK_ERROR';
+        } finally {
+          controllers.delete(controller);
+          attempt.finishedAt = new Date().toISOString();
+          attempt.durationMs = Math.round((performance.now() - started) * 1000) / 1000;
+        }
+      }
+    }, delayMs);
+    timers.add(timer);
+  }
   function runFor(id) {
     if (!runs.has(id)) runs.set(id, { keys: new Map(), merchants: new Map(), attempts: [], callbacks: [] });
     return runs.get(id);
@@ -53,7 +100,7 @@ export function createApp({ payhubToken = process.env.PAYHUB_TOKEN,
     const run = runs.get(id);
     res.json({ testId: id, acceptedCount: run?.merchants.size ?? 0,
       refunds: run ? [...run.merchants.values()].map(record => ({
-        refundId: record.response.refundId, status: record.response.status,
+        refundId: record.response.refundId, status: record.response.status, finalStatus: record.finalStatus ?? null,
       })) : [], attempts: run?.attempts ?? [], callbackAttempts: run?.callbacks ?? [] });
   });
   app.use('/v1/refunds', (req, res, next) => {
@@ -131,12 +178,14 @@ export function createApp({ payhubToken = process.env.PAYHUB_TOKEN,
       return send(res, 503, { errorCode: 'SERVICE_UNAVAILABLE' }, delayMs);
     }
     if (scenario === 'TIMEOUT') return send(res, 504, { errorCode: 'MOCK_TIMEOUT' }, Math.max(timeoutMs, delayMs));
-    // No await between lookup and acceptance: concurrent requests cannot accept twice.
     const pending = ['PENDING_SUCCESS', 'PENDING_FAILED', 'DUPLICATE_CALLBACK'].includes(scenario);
+    if (pending && !callbackUrl) return fail(503, 'CALLBACK_NOT_CONFIGURED');
+    // No await between lookup and acceptance: concurrent requests cannot accept twice.
     record.response = { refundId: `PH-RF-${randomUUID()}`, status: pending ? 'PENDING' : 'SUCCESS' };
     run.merchants.set(body.merchantRef, record);
     attempt.accepted = true;
     send(res, 200, record.response, scenario === 'SUCCESS_THEN_TIMEOUT' ? Math.max(timeoutMs, delayMs) : delayMs);
+    if (pending) scheduleCallbacks(run, record, body.merchantRef, delayMs + callbackDelayMs);
   });
   app.use((err, _req, res, _next) => {
     const code = err.type === 'entity.too.large' ? 413 : err.type === 'entity.parse.failed' ? 400 : 500;
