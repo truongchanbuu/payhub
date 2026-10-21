@@ -1,6 +1,10 @@
 import express from 'express';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 
+export const SCENARIOS = Object.freeze(['SUCCESS', 'PENDING_SUCCESS', 'PENDING_FAILED',
+  'INVALID_AMOUNT', 'HTTP_500', 'HTTP_503', 'RETRY_503_3', 'RETRY_503_2_SUCCESS',
+  'TIMEOUT', 'SUCCESS_THEN_TIMEOUT', 'DUPLICATE_CALLBACK']);
+
 const fields = ['merchantRef', 'orderNumber', 'amount', 'currency', 'reason'];
 const hash = value => createHash('sha256').update(value).digest('hex');
 const matches = (actual, expected) => typeof actual === 'string'
@@ -9,12 +13,32 @@ const validText = (value, max = 200) => typeof value === 'string'
   && value.length > 0 && value.length <= max && value.trim() === value;
 
 export function createApp({ payhubToken = process.env.PAYHUB_TOKEN,
-  adminKey = process.env.ADMIN_KEY } = {}) {
+  adminKey = process.env.ADMIN_KEY, timeoutMs = 11000 } = {}) {
   if (!validText(payhubToken) || !validText(adminKey) || payhubToken === adminKey) {
     throw new Error('Distinct PAYHUB_TOKEN and ADMIN_KEY are required');
   }
   const app = express();
   const runs = new Map();
+  const timers = new Set();
+  app.locals.dispose = () => {
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
+  };
+  function send(res, code, body, delayMs = 0) {
+    if (!delayMs) return res.status(code).json(body);
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      if (!res.destroyed) res.status(code).json(body);
+    }, delayMs);
+    timers.add(timer);
+    res.once('close', () => { clearTimeout(timer); timers.delete(timer); });
+  }
+  function readDelay(req, name, fallback) {
+    const value = req.get(name);
+    if (value === undefined) return fallback;
+    if (!/^\d{1,6}$/.test(value) || Number(value) > 120000) return null;
+    return Number(value);
+  }
   function runFor(id) {
     if (!runs.has(id)) runs.set(id, { keys: new Map(), merchants: new Map(), attempts: [], callbacks: [] });
     return runs.get(id);
@@ -87,12 +111,32 @@ export function createApp({ payhubToken = process.env.PAYHUB_TOKEN,
       attempt.replayed = true;
       return res.json(merchant.response);
     }
-    // No await between lookup and acceptance: concurrent requests cannot accept twice.
-    const record = { fingerprint, response: { refundId: `PH-RF-${randomUUID()}`, status: 'SUCCESS' } };
+    const requested = req.get('X-Mock-Scenario');
+    if (requested !== undefined && !SCENARIOS.includes(requested)) return fail(400, 'INVALID_SCENARIO');
+    const delayMs = readDelay(req, 'X-Mock-Delay-Ms', existing?.delayMs ?? 0);
+    const callbackDelayMs = readDelay(req, 'X-Mock-Callback-Delay-Ms', existing?.callbackDelayMs ?? 1000);
+    if (delayMs === null || callbackDelayMs === null) return fail(400, 'INVALID_DELAY');
+    if (existing && requested !== undefined && requested !== existing.scenario) return fail(409, 'SCENARIO_CONFLICT');
+    const record = existing ?? { fingerprint, scenario: requested ?? 'SUCCESS',
+      delayMs, callbackDelayMs, step: 0 };
     run.keys.set(key, record);
+    record.step += 1;
+    attempt.scenario = record.scenario;
+    attempt.scenarioAttempt = record.step;
+    const scenario = record.scenario;
+    if (scenario === 'INVALID_AMOUNT') return send(res, 422, { errorCode: 'INVALID_AMOUNT' }, delayMs);
+    if (scenario === 'HTTP_500') return send(res, 500, { errorCode: 'INTERNAL_ERROR' }, delayMs);
+    if (scenario === 'HTTP_503' || (scenario === 'RETRY_503_3' && record.step <= 3)
+      || (scenario === 'RETRY_503_2_SUCCESS' && record.step <= 2)) {
+      return send(res, 503, { errorCode: 'SERVICE_UNAVAILABLE' }, delayMs);
+    }
+    if (scenario === 'TIMEOUT') return send(res, 504, { errorCode: 'MOCK_TIMEOUT' }, Math.max(timeoutMs, delayMs));
+    // No await between lookup and acceptance: concurrent requests cannot accept twice.
+    const pending = ['PENDING_SUCCESS', 'PENDING_FAILED', 'DUPLICATE_CALLBACK'].includes(scenario);
+    record.response = { refundId: `PH-RF-${randomUUID()}`, status: pending ? 'PENDING' : 'SUCCESS' };
     run.merchants.set(body.merchantRef, record);
     attempt.accepted = true;
-    res.json(record.response);
+    send(res, 200, record.response, scenario === 'SUCCESS_THEN_TIMEOUT' ? Math.max(timeoutMs, delayMs) : delayMs);
   });
   app.use((err, _req, res, _next) => {
     const code = err.type === 'entity.too.large' ? 413 : err.type === 'entity.parse.failed' ? 400 : 500;

@@ -5,7 +5,9 @@ import { createApp } from '../src/app.js';
 const config = { payhubToken: 'test-payhub-secret', adminKey: 'test-admin-secret' };
 const payload = { merchantRef: 'RR-2610-00015', orderNumber: '00012345', amount: 1992000, currency: 'VND', reason: 'CUSTOMER_RETURN' };
 async function setup(t, options = {}) {
-  const url = await serve(t, createApp({ ...config, ...options }));
+  const app = createApp({ ...config, timeoutMs: 80, ...options });
+  t.after(() => app.locals.dispose());
+  const url = await serve(t, app);
   const request = async (headers = {}, body = payload) => {
     const response = await fetch(`${url}/v1/refunds`, { method: 'POST', headers: { Authorization: `Bearer ${config.payhubToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'key-1', ...headers }, body: JSON.stringify(body) });
     return { code: response.status, body: await response.json() };
@@ -108,4 +110,112 @@ test('protected attempt tracing excludes secrets and private payload', async t =
 test('startup requires distinct configured credentials', () => {
   assert.throws(() => createApp({ payhubToken: '', adminKey: '' }));
   assert.throws(() => createApp({ payhubToken: 'same', adminKey: 'same' }));
+});
+
+
+for (const [scenario, codes, status] of [
+  ['SUCCESS', [200], 'SUCCESS'], ['PENDING_SUCCESS', [200], 'PENDING'],
+  ['PENDING_FAILED', [200], 'PENDING'], ['DUPLICATE_CALLBACK', [200], 'PENDING'],
+  ['INVALID_AMOUNT', [422, 422]], ['HTTP_500', [500, 500]], ['HTTP_503', [503, 503]],
+  ['RETRY_503_3', [503, 503, 503, 200], 'SUCCESS'],
+  ['RETRY_503_2_SUCCESS', [503, 503, 200], 'SUCCESS'],
+]) {
+  test(`scenario ${scenario} preserves sequence without repeat headers`, async t => {
+    const { request, trace } = await setup(t);
+    for (const [i, code] of codes.entries()) {
+      const result = await request(i === 0 ? { 'X-Mock-Scenario': scenario } : {});
+      assert.equal(result.code, code);
+      if (code === 200) assert.equal(result.body.status, status);
+    }
+    assert.deepEqual((await trace()).attempts.map(x => x.responseCode), codes);
+    assert.equal((await trace()).acceptedCount, codes.includes(200) ? 1 : 0);
+  });
+}
+
+test('scenario conflict cannot overwrite pre-acceptance state; accepted result always replays', async t => {
+  const { request, trace } = await setup(t);
+  assert.equal((await request({ 'X-Mock-Scenario': 'RETRY_503_2_SUCCESS' })).code, 503);
+  assert.equal((await request({ 'X-Mock-Scenario': 'SUCCESS' })).code, 409);
+  assert.equal((await request()).code, 503);
+  const accepted = await request();
+  assert.equal(accepted.body.status, 'SUCCESS');
+  assert.deepEqual(await request({ 'X-Mock-Scenario': 'HTTP_500' }), accepted);
+  assert.deepEqual(await request({ 'X-Mock-Scenario': 'unknown' }), accepted);
+  assert.deepEqual((await trace()).attempts.slice(0, 4).map(x => x.scenarioAttempt), [1, undefined, 2, 3]);
+});
+
+test('retry counters isolate test runs and keys and consume each concurrent HTTP attempt', async t => {
+  const { request, trace } = await setup(t);
+  assert.equal((await request({ 'X-Mock-Scenario': 'RETRY_503_2_SUCCESS', 'X-Mock-Test-Id': 'a' })).code, 503);
+  assert.equal((await request({ 'X-Mock-Scenario': 'RETRY_503_2_SUCCESS', 'X-Mock-Test-Id': 'b' })).code, 503);
+  assert.equal((await request({ 'X-Mock-Scenario': 'RETRY_503_2_SUCCESS', 'X-Mock-Test-Id': 'a', 'Idempotency-Key': 'second' })).code, 503);
+  assert.equal((await request({ 'X-Mock-Test-Id': 'a' })).code, 503);
+  assert.equal((await request({ 'X-Mock-Test-Id': 'b' })).code, 503);
+  assert.equal((await trace('a')).acceptedCount, 0);
+  const responses = await Promise.all(Array.from({ length: 6 }, () => request({ 'X-Mock-Test-Id': 'concurrent', 'X-Mock-Scenario': 'RETRY_503_2_SUCCESS' })));
+  assert.deepEqual(responses.map(x => x.code).sort(), [200, 200, 200, 200, 503, 503]);
+  assert.equal((await trace('concurrent')).acceptedCount, 1);
+});
+
+test('invalid mock headers do not establish scenario', async t => {
+  const { request, trace } = await setup(t);
+  for (const value of ['BOGUS', 'success', 'SUCCESS, HTTP_500', '']) {
+    assert.equal((await request({ 'X-Mock-Scenario': value })).code, 400);
+  }
+  for (const name of ['X-Mock-Delay-Ms', 'X-Mock-Callback-Delay-Ms']) {
+    for (const value of ['-1', 'NaN', '1.5', '120001', '']) assert.equal((await request({ [name]: value })).code, 400);
+  }
+  assert.equal((await request({ 'X-Mock-Test-Id': '' })).code, 400);
+  assert.equal((await trace()).acceptedCount, 0);
+  assert.equal((await request()).body.status, 'SUCCESS');
+});
+
+test('TIMEOUT is delayed and never accepted, including disconnected retries', async t => {
+  const { request, trace, url } = await setup(t);
+  const start = performance.now();
+  assert.equal((await request({ 'X-Mock-Scenario': 'TIMEOUT' })).code, 504);
+  assert.ok(performance.now() - start >= 70);
+  const controller = new AbortController();
+  const pending = fetch(`${url}/v1/refunds`, { method: 'POST', headers: { Authorization: `Bearer ${config.payhubToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'key-1' }, body: JSON.stringify(payload), signal: controller.signal });
+  await waitFor(async () => (await trace()).attempts.length === 2);
+  controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+  await waitFor(async () => (await trace()).attempts[1].disconnected);
+  const log = await trace();
+  assert.equal(log.acceptedCount, 0);
+  assert.equal(log.attempts[1].responseCode, null);
+  assert.equal(log.attempts[1].scenarioAttempt, 2);
+});
+
+async function waitFor(condition) {
+  const end = performance.now() + 2000;
+  while (!(await condition())) {
+    assert.ok(performance.now() < end, 'condition did not become true');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+test('SUCCESS_THEN_TIMEOUT accepts before lost response and retries immediately replay one refund', async t => {
+  const { request, trace, url } = await setup(t, { timeoutMs: 1000 });
+  const controller = new AbortController();
+  const pending = fetch(`${url}/v1/refunds`, { method: 'POST', headers: { Authorization: `Bearer ${config.payhubToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'key-1', 'X-Mock-Scenario': 'SUCCESS_THEN_TIMEOUT' }, body: JSON.stringify(payload), signal: controller.signal });
+  await waitFor(async () => (await trace()).acceptedCount === 1);
+  controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+  const replay = await request();
+  assert.equal(replay.body.status, 'SUCCESS');
+  assert.deepEqual(await request({ 'X-Mock-Scenario': 'HTTP_503' }), replay);
+  const log = await trace();
+  assert.equal(log.acceptedCount, 1);
+  assert.equal(log.refunds[0].refundId, replay.body.refundId);
+  assert.equal(log.attempts[1].replayed, true);
+});
+
+test('X-Mock-Delay-Ms delays response but acceptance remains atomic', async t => {
+  const { request, trace } = await setup(t);
+  const start = performance.now();
+  const response = await request({ 'X-Mock-Delay-Ms': '40' });
+  assert.equal(response.code, 200);
+  assert.ok(performance.now() - start >= 35);
+  assert.ok((await trace()).attempts[0].durationMs >= 35);
 });
