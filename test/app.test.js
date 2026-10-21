@@ -317,3 +317,67 @@ test('callback configuration rejects unsafe URLs and missing credentials', () =>
   assert.throws(() => createApp({ ...config, callbackUrl: 'https://example.com', callbackToken: '' }));
   assert.throws(() => createApp({ ...config, callbackUrl: '', callbackToken: 'token' }));
 });
+
+test('malformed JSON, large payloads and unsupported content types are safely traced', async t => {
+  const { url, trace } = await setup(t);
+  for (const [body, type, code] of [
+    ['{"private":', 'application/json', 400],
+    [JSON.stringify({ secret: 'x'.repeat(17000) }), 'application/json', 413],
+    [JSON.stringify(payload), 'text/plain', 415],
+  ]) {
+    const response = await fetch(`${url}/v1/refunds`, { method: 'POST', headers: {
+      Authorization: `Bearer ${config.payhubToken}`, 'Idempotency-Key': 'key-1', 'Content-Type': type,
+    }, body });
+    assert.equal(response.status, code);
+    assert.ok(!(await response.text()).includes('private'));
+  }
+  const log = await trace();
+  assert.deepEqual(log.attempts.map(x => x.responseCode), [400, 413, 415]);
+  assert.equal(log.acceptedCount, 0);
+});
+
+test('canonical payload is independent of JSON field order', async t => {
+  const { request } = await setup(t);
+  const first = await request();
+  assert.deepEqual(await request({}, Object.fromEntries(Object.entries(payload).reverse())), first);
+});
+
+test('a rejected payload does not reserve key or merchant reference', async t => {
+  const { request, trace } = await setup(t);
+  assert.equal((await request({}, { ...payload, amount: 0 })).code, 422);
+  assert.equal((await request()).code, 200);
+  assert.equal((await trace()).acceptedCount, 1);
+});
+
+test('second key with prior failures replays an accepted merchant without another refund', async t => {
+  const { request, trace } = await setup(t);
+  assert.equal((await request({ 'X-Mock-Scenario': 'HTTP_500' })).code, 500);
+  const accepted = await request({ 'Idempotency-Key': 'second-key' });
+  assert.equal(accepted.body.status, 'SUCCESS');
+  assert.deepEqual(await request({ 'X-Mock-Scenario': 'TIMEOUT' }), accepted);
+  assert.equal((await trace()).acceptedCount, 1);
+});
+
+test('concurrent delayed PENDING duplicates schedule one callback', async t => {
+  const { request, trace, received } = await setup(t);
+  const responses = await Promise.all(Array.from({ length: 12 }, (_, i) => request({
+    'Idempotency-Key': `pending-${i % 3}`, 'X-Mock-Scenario': 'PENDING_SUCCESS',
+    'X-Mock-Delay-Ms': '20', 'X-Mock-Callback-Delay-Ms': '20',
+    'X-Mock-Callback-Url': 'http://untrusted.invalid/steal',
+  })));
+  for (const response of responses) assert.deepEqual(response, responses[0]);
+  await waitFor(async () => (await trace()).callbackAttempts[0]?.outcome === 'DELIVERED');
+  assert.equal((await trace()).acceptedCount, 1);
+  assert.equal((await trace()).callbackAttempts.length, 1);
+  assert.equal(received.length, 1);
+});
+
+test('traces reject malformed testId queries and unknown routes return safe JSON', async t => {
+  const { url } = await setup(t);
+  for (const query of ['testId=', 'testId=a&testId=b', `testId=${'x'.repeat(101)}`]) {
+    assert.equal((await fetch(`${url}/__mock/attempts?${query}`, { headers: { 'X-Admin-Key': config.adminKey } })).status, 400);
+  }
+  const response = await fetch(`${url}/unknown`);
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { errorCode: 'NOT_FOUND' });
+});
