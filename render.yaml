@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: smartreturn-payhub-mock
+    runtime: node
+    plan: free
+    numInstances: 1
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PAYHUB_TOKEN
+        sync: false
+      - key: ADMIN_KEY
+        sync: false
+      - key: SALESFORCE_CALLBACK_URL
+        sync: false
+      - key: SALESFORCE_ACCESS_TOKEN
+        sync: false
