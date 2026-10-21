@@ -2,6 +2,8 @@ services:
   - type: web
     name: smartreturn-payhub-mock
     runtime: node
+    branch: main
+    autoDeployTrigger: checksPass
     plan: free
     numInstances: 1
     buildCommand: npm ci --omit=dev

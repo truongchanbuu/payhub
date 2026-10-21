@@ -202,6 +202,48 @@ Test-specific headers belong in the test harness; concurrent scenarios need dist
 test IDs. Keep ADMIN_KEY outside Salesforce business callouts. The callback uses a
 separate Salesforce access token, not the PayHub Named Credential secret.
 
+## CI/CD
+
+[GitHub Actions](.github/workflows/ci.yml) runs on pull requests targeting `main`,
+pushes to `main`, and manual workflow dispatch. The `Test and validate` check uses
+Node.js 24, installs with `npm ci`, runs both test suites (including real 10-second
+timeouts), and validates `render.yaml` against Render's current official schema.
+Python is used only for schema validation in CI; the deployed server remains Node.js.
+The validation step needs access to PyPI and Render's schema endpoint.
+
+Render performs CD: `branch: main` and `autoDeployTrigger: checksPass` select deployment
+of new `main` commits after CI checks pass. This is Render's native
+[After CI Checks Pass integration](https://render.com/docs/deploys#integrating-with-ci).
+No GitHub deployment secret, deploy hook or Render API key is required.
+Pull requests run checks but do not deploy this service. GitHub Actions report test
+results; Render reports build/deploy results and checks `/healthz`.
+
+To activate:
+
+1. Publish the committed code to `https://github.com/truongchanbuu/payhub` on `main`
+   through your approved Git workflow. This task prepares local commits; it does not
+   push them or claim a hosted Actions run succeeded.
+2. Enable GitHub Actions for the repository. In the branch rules for `main`, require
+   the `Test and validate` check before merging; this rule is configured on GitHub,
+   not created by the workflow file.
+3. Connect Render to your GitHub account, grant access to this repository, and create
+   select a Free Blueprint from `render.yaml`. Start its first deployment after step 5.
+   Connecting by a public repository URL alone
+   does not enable Render's automatic deployment integration.
+4. Set PAYHUB_TOKEN and ADMIN_KEY in Render, plus both Salesforce callback variables
+   when needed. These runtime secrets do not belong in GitHub CI or source control.
+5. Run CI for the initial `main` commit and confirm it passes before creating the
+   first deployment. The Blueprint's initial provisioning and later manual deploys
+   must be checked separately; the CI gate controls subsequent automatic code deploys.
+6. For an existing Render service, sync the Blueprint or set **Auto-Deploy → After CI
+   Checks Pass** and verify its linked branch is `main`. If using automatic Blueprint
+   sync, disable **Auto Sync** when Blueprint changes must not independently trigger
+   infrastructure updates; sync those changes after CI succeeds.
+
+After deployment, verify the assigned HTTPS `/healthz` URL and a synthetic refund.
+Render's deploy status is distinct from a successful CI check. Every deploy replaces
+RAM state and pending callbacks, so start a fresh UAT run after deployments.
+
 ## Free HTTPS deployment
 
 `render.yaml` prepares one Render Free Node web service, `npm ci --omit=dev`,
