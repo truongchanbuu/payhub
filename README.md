@@ -11,6 +11,7 @@ retry counters, pending callbacks and traces disappear on process restart.
 npm ci
 cp .env.example .env
 # Edit .env with distinct random PAYHUB_TOKEN and ADMIN_KEY values.
+# Set PAYHUB_CLIENT_ID and PAYHUB_CLIENT_SECRET for the OAuth2 token endpoint.
 npm test
 npm run test:integration # Separate real 10-second timeout check (~10 seconds).
 npm start
@@ -26,6 +27,8 @@ Node 24 is an [LTS release](https://nodejs.org/en/about/previous-releases).
 | --- | --- |
 | `PORT` | Hosting-assigned listener port, default 3000 |
 | `PAYHUB_TOKEN` | Required Bearer secret for refund requests |
+| `PAYHUB_CLIENT_ID` | OAuth2 client ID used by Salesforce |
+| `PAYHUB_CLIENT_SECRET` | OAuth2 client secret used by Salesforce |
 | `ADMIN_KEY` | Required distinct secret for read-only tracing |
 | `SALESFORCE_CALLBACK_URL` | Full existing Salesforce INT-04 HTTPS endpoint |
 | `SALESFORCE_ACCESS_TOKEN` | Valid Salesforce OAuth access token for that org |
@@ -38,17 +41,35 @@ never followed. Tokens, callback response bodies and private payloads are not lo
 
 ## Token endpoint
 
-Salesforce can retrieve the configured `PAYHUB_TOKEN` with an unauthenticated
-`POST /v1/token`. No request body is required:
+`POST /v1/token` simulates the OAuth2
+[client credentials grant](https://www.rfc-editor.org/rfc/rfc6749#section-4.4).
+Configure `PAYHUB_CLIENT_ID` and `PAYHUB_CLIENT_SECRET` in the server environment,
+then send `application/x-www-form-urlencoded` with `grant_type=client_credentials`.
+Authenticate with HTTP Basic (form-encode each credential before Base64 encoding),
+or send `client_id` and `client_secret` in the form body. Use only one method per request.
+For example, with the client credentials exported in your shell:
 
 ```sh
-curl -X POST http://localhost:3000/v1/token
+curl http://localhost:3000/v1/token \
+  --data-urlencode 'grant_type=client_credentials' \
+  --data-urlencode "client_id=$PAYHUB_CLIENT_ID" \
+  --data-urlencode "client_secret=$PAYHUB_CLIENT_SECRET"
 ```
 
 Returns HTTP 200 with `{"access_token":"<PAYHUB_TOKEN>","token_type":"Bearer"}`.
 Use `access_token` in the refund request's `Authorization: Bearer <access_token>`
-header. Responses disable caching. This simple mock endpoint exposes the configured
-token to any caller; it always returns the same token, with no expiry or refresh flow.
+header. This mock returns the configured static token: it does not expire or rotate,
+so `expires_in` and `refresh_token` are omitted. Request another token with the same
+client credentials when needed. Scopes are unsupported; omit `scope`.
+
+Errors use OAuth2's `{"error":"..."}` format: invalid credentials return
+`invalid_client` (401 with `WWW-Authenticate` for header authentication, otherwise
+400), missing/duplicate parameters or mixed authentication return 400
+`invalid_request`, unsupported grants return 400 `unsupported_grant_type`, and
+nonempty scope returns 400 `invalid_scope`. All token responses disable caching.
+Both client environment variables may be omitted to keep existing static Bearer
+usage; the token endpoint then returns 503 `temporarily_unavailable`. Configuring
+only one client variable fails startup. Use HTTPS for the hosted token endpoint.
 
 ## INT-03 contract
 

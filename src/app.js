@@ -13,11 +13,15 @@ const validText = (value, max = 200) => typeof value === 'string'
   && value.length > 0 && value.length <= max && value.trim() === value;
 
 export function createApp({ payhubToken = process.env.PAYHUB_TOKEN,
+  clientId = process.env.PAYHUB_CLIENT_ID, clientSecret = process.env.PAYHUB_CLIENT_SECRET,
   adminKey = process.env.ADMIN_KEY, timeoutMs = 11000,
   callbackUrl = process.env.SALESFORCE_CALLBACK_URL,
   callbackToken = process.env.SALESFORCE_ACCESS_TOKEN, callbackTimeoutMs = 5000 } = {}) {
   if (!validText(payhubToken) || !validText(adminKey) || payhubToken === adminKey) {
     throw new Error('Distinct PAYHUB_TOKEN and ADMIN_KEY are required');
+  }
+  if ((clientId || clientSecret) && (!validText(clientId) || !validText(clientSecret))) {
+    throw new Error('PAYHUB_CLIENT_ID and PAYHUB_CLIENT_SECRET must be configured together');
   }
   if (callbackUrl || callbackToken) {
     let url;
@@ -92,9 +96,43 @@ export function createApp({ payhubToken = process.env.PAYHUB_TOKEN,
   }
   app.disable('x-powered-by');
   app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
-  app.post('/v1/token', (_req, res) => {
+  app.post('/v1/token', (_req, res, next) => {
     res.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache' });
+    next();
+  }, express.urlencoded({ extended: false, limit: '16kb' }), (req, res) => {
+    const fail = (code, error) => res.status(code).json({ error });
+    if (!clientId || !clientSecret) return fail(503, 'temporarily_unavailable');
+    if (!req.is('application/x-www-form-urlencoded')) return fail(400, 'invalid_request');
+    const body = req.body ?? {};
+    if (Object.values(body).some(value => typeof value !== 'string')) return fail(400, 'invalid_request');
+    let id = body.client_id;
+    let secret = body.client_secret;
+    const authorization = req.get('Authorization');
+    if (authorization !== undefined) {
+      if (id !== undefined || secret !== undefined) return fail(400, 'invalid_request');
+      const basic = /^Basic ([A-Za-z0-9+/]+={0,2})$/i.exec(authorization);
+      if (basic) {
+        const credentials = Buffer.from(basic[1], 'base64').toString('utf8');
+        const separator = credentials.indexOf(':');
+        if (separator >= 0) {
+          try {
+            id = decodeURIComponent(credentials.slice(0, separator).replace(/\+/g, ' '));
+            secret = decodeURIComponent(credentials.slice(separator + 1).replace(/\+/g, ' '));
+          } catch { return fail(400, 'invalid_request'); }
+        }
+      }
+    }
+    if (!matches(id, clientId) || !matches(secret, clientSecret)) {
+      if (authorization !== undefined) res.set('WWW-Authenticate', 'Basic realm="PayHub"');
+      return fail(authorization !== undefined ? 401 : 400, 'invalid_client');
+    }
+    if (!body.grant_type) return fail(400, 'invalid_request');
+    if (body.grant_type !== 'client_credentials') return fail(400, 'unsupported_grant_type');
+    if (body.scope) return fail(400, 'invalid_scope');
     res.json({ access_token: payhubToken, token_type: 'Bearer' });
+  }, (err, _req, res, _next) => {
+    const code = err.type === 'entity.too.large' ? 413 : 400;
+    res.status(code).json({ error: 'invalid_request' });
   });
   app.get('/__mock/attempts', (req, res) => {
     res.set('Cache-Control', 'no-store');

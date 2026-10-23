@@ -3,7 +3,8 @@ import express from 'express';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
 
-const config = { payhubToken: 'test-payhub-secret', adminKey: 'test-admin-secret' };
+const config = { payhubToken: 'test-payhub-secret', adminKey: 'test-admin-secret',
+  clientId: 'test-client', clientSecret: 'test-client-secret' };
 const payload = { merchantRef: 'RR-2610-00015', orderNumber: '00012345', amount: 1992000, currency: 'VND', reason: 'CUSTOMER_RETURN' };
 async function setup(t, options = {}) {
   const received = [];
@@ -44,9 +45,11 @@ test('health endpoint', async t => {
   assert.deepEqual(await response.json(), { status: 'ok' });
 });
 
-test('token endpoint returns the configured bearer token for refund requests', async t => {
+test('OAuth client credentials return a bearer token usable for refunds', async t => {
   const { url, request, trace } = await setup(t);
-  const response = await fetch(`${url}/v1/token`, { method: 'POST' });
+  const response = await fetch(`${url}/v1/token`, { method: 'POST', body: new URLSearchParams({
+    grant_type: 'client_credentials', client_id: config.clientId, client_secret: config.clientSecret,
+  }) });
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   assert.equal(response.headers.get('Pragma'), 'no-cache');
@@ -56,6 +59,59 @@ test('token endpoint returns the configured bearer token for refund requests', a
   const refund = await request({ Authorization: `${token.token_type} ${token.access_token}` });
   assert.equal(refund.code, 200);
   assert.equal(refund.body.status, 'SUCCESS');
+});
+
+test('OAuth client credentials support form-encoded HTTP Basic authentication', async t => {
+  const clientId = 'client +:/';
+  const clientSecret = 'secret +:%';
+  const { url } = await setup(t, { clientId, clientSecret });
+  const encode = value => new URLSearchParams({ v: value }).toString().slice(2);
+  const basic = Buffer.from(`${encode(clientId)}:${encode(clientSecret)}`).toString('base64');
+  const response = await fetch(`${url}/v1/token`, { method: 'POST',
+    headers: { Authorization: `Basic ${basic}` },
+    body: new URLSearchParams({ grant_type: 'client_credentials' }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { access_token: config.payhubToken, token_type: 'Bearer' });
+});
+
+test('OAuth errors reject invalid credentials, grants, scope and malformed requests safely', async t => {
+  const { url, trace } = await setup(t);
+  const valid = { grant_type: 'client_credentials', client_id: config.clientId, client_secret: config.clientSecret };
+  for (const [body, headers, code, error] of [
+    [new URLSearchParams(), {}, 400, 'invalid_client'],
+    [new URLSearchParams({ ...valid, client_id: 'wrong' }), {}, 400, 'invalid_client'],
+    [new URLSearchParams({ ...valid, client_secret: 'wrong' }), {}, 400, 'invalid_client'],
+    [new URLSearchParams({ grant_type: 'client_credentials' }), { Authorization: 'Basic d3Jvbmc6d3Jvbmc=' }, 401, 'invalid_client'],
+    [new URLSearchParams({ grant_type: 'client_credentials' }), { Authorization: 'Bearer wrong' }, 401, 'invalid_client'],
+    [new URLSearchParams(valid), { Authorization: 'Basic d3Jvbmc6d3Jvbmc=' }, 400, 'invalid_request'],
+    [new URLSearchParams({ ...valid, grant_type: '' }), {}, 400, 'invalid_request'],
+    [new URLSearchParams({ ...valid, grant_type: 'password' }), {}, 400, 'unsupported_grant_type'],
+    [new URLSearchParams({ ...valid, scope: 'refunds' }), {}, 400, 'invalid_scope'],
+    [new URLSearchParams([...Object.entries(valid), ['grant_type', 'password']]), {}, 400, 'invalid_request'],
+    [JSON.stringify(valid), { 'Content-Type': 'application/json' }, 400, 'invalid_request'],
+    [new URLSearchParams({ ...valid, extra: 'x'.repeat(17000) }), {}, 413, 'invalid_request'],
+  ]) {
+    const response = await fetch(`${url}/v1/token`, { method: 'POST', headers, body });
+    assert.equal(response.status, code);
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+    if (code === 401) assert.equal(response.headers.get('WWW-Authenticate'), 'Basic realm="PayHub"');
+    assert.deepEqual(await response.json(), { error });
+  }
+  const response = await fetch(`${url}/v1/token`, { method: 'POST' });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: 'invalid_request' });
+  assert.equal((await trace()).attempts.length, 0);
+});
+
+test('OAuth credentials are optional together; unconfigured token endpoint stays closed', async t => {
+  assert.throws(() => createApp({ ...config, clientId: '' }));
+  assert.throws(() => createApp({ ...config, clientSecret: '' }));
+  const { url, request } = await setup(t, { clientId: '', clientSecret: '' });
+  const response = await fetch(`${url}/v1/token`, { method: 'POST' });
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: 'temporarily_unavailable' });
+  assert.equal((await request()).code, 200);
 });
 
 
