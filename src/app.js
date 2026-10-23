@@ -92,6 +92,10 @@ export function createApp({ payhubToken = process.env.PAYHUB_TOKEN,
   }
   app.disable('x-powered-by');
   app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
+  app.post('/v1/token', (_req, res) => {
+    res.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache' });
+    res.json({ access_token: payhubToken, token_type: 'Bearer' });
+  });
   app.get('/__mock/attempts', (req, res) => {
     res.set('Cache-Control', 'no-store');
     if (!matches(req.get('X-Admin-Key'), adminKey)) return res.status(401).json({ errorCode: 'UNAUTHORIZED' });

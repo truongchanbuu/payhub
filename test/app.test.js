@@ -44,6 +44,20 @@ test('health endpoint', async t => {
   assert.deepEqual(await response.json(), { status: 'ok' });
 });
 
+test('token endpoint returns the configured bearer token for refund requests', async t => {
+  const { url, request, trace } = await setup(t);
+  const response = await fetch(`${url}/v1/token`, { method: 'POST' });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  assert.equal(response.headers.get('Pragma'), 'no-cache');
+  const token = await response.json();
+  assert.deepEqual(token, { access_token: config.payhubToken, token_type: 'Bearer' });
+  assert.equal((await trace()).attempts.length, 0);
+  const refund = await request({ Authorization: `${token.token_type} ${token.access_token}` });
+  assert.equal(refund.code, 200);
+  assert.equal(refund.body.status, 'SUCCESS');
+});
+
 
 test('default SUCCESS and stable accepted response', async t => {
   const { request, trace } = await setup(t);

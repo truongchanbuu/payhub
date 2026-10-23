@@ -36,6 +36,20 @@ Plain HTTP callbacks are allowed only to localhost/loopback for local testing.
 No incoming header or payload can override the callback destination. Redirects are
 never followed. Tokens, callback response bodies and private payloads are not logged.
 
+## Token endpoint
+
+Salesforce can retrieve the configured `PAYHUB_TOKEN` with an unauthenticated
+`POST /v1/token`. No request body is required:
+
+```sh
+curl -X POST http://localhost:3000/v1/token
+```
+
+Returns HTTP 200 with `{"access_token":"<PAYHUB_TOKEN>","token_type":"Bearer"}`.
+Use `access_token` in the refund request's `Authorization: Bearer <access_token>`
+header. Responses disable caching. This simple mock endpoint exposes the configured
+token to any caller; it always returns the same token, with no expiry or refresh flow.
+
 ## INT-03 contract
 
 ```sh
