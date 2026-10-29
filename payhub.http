@@ -15,6 +15,18 @@ X-Admin-Key: {{$processEnv ADMIN_KEY}}
 
 ### Make every new Salesforce refund time out
 # Run UAT cases serially, then reset the scenario below.
+# Copy the JSON part of one line below over the active body:
+# 200 SUCCESS immediately:              { "scenario": "SUCCESS" }
+# PENDING, then SUCCESS callback:        { "scenario": "PENDING_SUCCESS" }
+# PENDING, then FAILED callback:         { "scenario": "PENDING_FAILED" }
+# 422 INVALID_AMOUNT:                    { "scenario": "INVALID_AMOUNT" }
+# 500 on every attempt:                  { "scenario": "HTTP_500" }
+# 503 on every attempt:                  { "scenario": "HTTP_503" }
+# 503 x3, SUCCESS on attempt 4:          { "scenario": "RETRY_503_3" }
+# 503 x2, SUCCESS on attempt 3:          { "scenario": "RETRY_503_2_SUCCESS" }
+# Exceeds the Salesforce timeout:        { "scenario": "TIMEOUT" }
+# Accepted once; retry replays SUCCESS:  { "scenario": "SUCCESS_THEN_TIMEOUT" }
+# PENDING, then two SUCCESS callbacks:   { "scenario": "DUPLICATE_CALLBACK" }
 PUT {{baseUrl}}/__mock/scenario
 X-Admin-Key: {{$processEnv ADMIN_KEY}}
 Content-Type: application/json
