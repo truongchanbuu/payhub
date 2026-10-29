@@ -31,9 +31,10 @@ Node 24 is an [LTS release](https://nodejs.org/en/about/previous-releases).
 | `PAYHUB_CLIENT_SECRET` | OAuth2 client secret used by Salesforce |
 | `ADMIN_KEY` | Required distinct secret for read-only tracing |
 | `SALESFORCE_CALLBACK_URL` | Full existing Salesforce INT-04 HTTPS endpoint |
-| `SALESFORCE_ACCESS_TOKEN` | Valid Salesforce OAuth access token for that org |
+| `SALESFORCE_CLIENT_ID` | OAuth client ID for the Salesforce callback integration user |
+| `SALESFORCE_CLIENT_SECRET` | OAuth client secret for the Salesforce callback integration user |
 
-Callback URL/token are optional together; supplying only one fails startup. PENDING
+Callback URL/client credentials are optional together; incomplete configuration fails startup. PENDING
 scenarios return pre-acceptance 503 `CALLBACK_NOT_CONFIGURED` when both are absent.
 Plain HTTP callbacks are allowed only to localhost/loopback for local testing.
 No incoming header or payload can override the callback destination. Redirects are
@@ -172,9 +173,10 @@ For TIMEOUT the same experiment leaves `acceptedCount` at `0`.
 
 Configure the actual existing endpoint, for example
 `https://YOUR-DOMAIN.my.salesforce.com/services/apexrest/YOUR-INT04-PATH` (illustrative
-path, not an endpoint supplied by this project). Supply a valid OAuth access token
-for a Salesforce integration user with API access and permission to invoke that endpoint.
-The mock sends `Authorization: Bearer <SALESFORCE_ACCESS_TOKEN>` and JSON:
+path, not an endpoint supplied by this project). Configure an OAuth client credentials
+flow for a Salesforce integration user with API access and permission to invoke that
+endpoint. The mock obtains a fresh access token before each callback, then sends it as
+`Authorization: Bearer <access_token>` with JSON:
 
 ```json
 {"refundId":"PH-RF-<uuid>","merchantRef":"RR-2610-00015","status":"SUCCESS","processedAt":"2026-10-21T16:00:00.000Z"}
@@ -207,6 +209,23 @@ have null completion fields; disconnected requests retain `responseCode: null` a
 `disconnected: true`, because no HTTP response reached the client. Callback payloads,
 merchant references, order numbers, raw keys and secrets are excluded. Unknown test
 IDs return empty arrays and zero accepted refunds. Tracing is read-only and uncached.
+
+For a demo-friendly transaction timeline, query the protected endpoint by the
+Salesforce return request number:
+
+```sh
+curl --get "$PAYHUB_URL/__mock/transactions" \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  --data-urlencode 'testId=default' \
+  --data-urlencode 'merchantRef=RR-2610-00015'
+```
+
+The JSON response correlates accepted payment details, HTTP attempts and callback
+delivery attempts. It echoes the requested merchant reference for UAT display, but
+never returns authorization values, raw idempotency keys, order data, amounts, callback
+payloads or response bodies. Pre-acceptance 422/500/503/timeout attempts remain visible
+with `payment: null`. Unknown references return 404 `TRANSACTION_NOT_FOUND`. This
+endpoint requires the same `X-Admin-Key` as the lower-level trace and disables caching.
 
 For UAT-10: wake and verify the server, use a new test ID in the Salesforce test harness,
 confirm an empty trace, disable PayHub sending in Salesforce, execute the refund flow,
@@ -265,7 +284,8 @@ To activate:
    select a Free Blueprint from `render.yaml`. Start its first deployment after step 5.
    Connecting by a public repository URL alone
    does not enable Render's automatic deployment integration.
-4. Set PAYHUB_TOKEN and ADMIN_KEY in Render, plus both Salesforce callback variables
+4. Set PAYHUB_TOKEN and ADMIN_KEY in Render, plus the Salesforce callback URL, client ID
+   and client secret
    when needed. These runtime secrets do not belong in GitHub CI or source control.
 5. Run CI for the initial `main` commit and confirm it passes before creating the
    first deployment. The Blueprint's initial provisioning and later manual deploys

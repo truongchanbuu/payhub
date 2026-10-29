@@ -371,8 +371,87 @@ export function createApp({
             finalStatus: record.finalStatus ?? null,
           }))
         : [],
-      attempts: run?.attempts ?? [],
+      attempts: run
+        ? run.attempts.map(
+            ({ merchantRefHash: _merchantRefHash, ...attempt }) => attempt,
+          )
+        : [],
       callbackAttempts: run?.callbacks ?? [],
+    });
+  });
+
+  app.get("/__mock/transactions", (req, res) => {
+    res.set("Cache-Control", "no-store");
+
+    if (!matches(req.get("X-Admin-Key"), adminKey)) {
+      return res.status(401).json({ errorCode: "UNAUTHORIZED" });
+    }
+
+    const id = req.query.testId ?? "default";
+    const merchantRef = req.query.merchantRef;
+
+    if (!validText(id, 100)) {
+      return res.status(400).json({ errorCode: "INVALID_TEST_ID" });
+    }
+
+    if (!validText(merchantRef)) {
+      return res.status(400).json({ errorCode: "INVALID_MERCHANT_REF" });
+    }
+
+    const run = runs.get(id);
+    const record = run?.merchants.get(merchantRef);
+    const attempts = (run?.attempts ?? []).filter(
+      (attempt) => attempt.merchantRefHash === hash(merchantRef),
+    );
+
+    if (!record && attempts.length === 0) {
+      return res.status(404).json({ errorCode: "TRANSACTION_NOT_FOUND" });
+    }
+
+    const callbacks = record
+      ? (run?.callbacks ?? []).filter(
+          (attempt) => attempt.refundId === record.response.refundId,
+        )
+      : [];
+
+    res.json({
+      testId: id,
+      merchantRef,
+      payment: record
+        ? {
+            refundId: record.response.refundId,
+            initialStatus: record.response.status,
+            finalStatus: record.finalStatus ?? record.response.status,
+            scenario: record.scenario,
+            acceptedAt: record.acceptedAt,
+          }
+        : null,
+      attempts: attempts.map(
+        ({
+          number,
+          startedAt,
+          finishedAt,
+          durationMs,
+          responseCode,
+          disconnected,
+          scenario,
+          scenarioAttempt,
+          accepted,
+          replayed,
+        }) => ({
+          number,
+          startedAt,
+          finishedAt: finishedAt ?? null,
+          durationMs,
+          responseCode,
+          disconnected,
+          scenario: scenario ?? null,
+          scenarioAttempt: scenarioAttempt ?? null,
+          accepted: accepted ?? false,
+          replayed: replayed ?? false,
+        }),
+      ),
+      callbackAttempts: callbacks,
     });
   });
 
@@ -459,6 +538,7 @@ export function createApp({
     );
 
     const { run, attempt } = req.mock;
+    attempt.merchantRefHash = hash(body.merchantRef);
     const existing = run.keys.get(key);
 
     if (existing && existing.fingerprint !== fingerprint) {
@@ -566,6 +646,7 @@ export function createApp({
       refundId: `PH-RF-${randomUUID()}`,
       status: pending ? "PENDING" : "SUCCESS",
     };
+    record.acceptedAt = new Date().toISOString();
 
     run.merchants.set(body.merchantRef, record);
     attempt.accepted = true;

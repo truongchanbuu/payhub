@@ -18,5 +18,7 @@ services:
         sync: false
       - key: SALESFORCE_CALLBACK_URL
         sync: false
-      - key: SALESFORCE_ACCESS_TOKEN
+      - key: SALESFORCE_CLIENT_ID
+        sync: false
+      - key: SALESFORCE_CLIENT_SECRET
         sync: false

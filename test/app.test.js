@@ -9,6 +9,13 @@ const payload = { merchantRef: 'RR-2610-00015', orderNumber: '00012345', amount:
 async function setup(t, options = {}) {
   const received = [];
   const receiver = express();
+  receiver.use('/services/oauth2/token', express.urlencoded({ extended: false }));
+  receiver.post('/services/oauth2/token', (req, res) => {
+    if (req.body.client_id !== 'salesforce-client' || req.body.client_secret !== 'salesforce-secret') {
+      return res.status(401).json({ error: 'invalid_client' });
+    }
+    res.json({ access_token: 'salesforce-private-token', token_type: 'Bearer' });
+  });
   receiver.use(express.text({ type: 'application/json' }));
   receiver.post('/callback', (req, res) => {
     received.push({ raw: req.body, body: JSON.parse(req.body), authorization: req.get('Authorization'), at: performance.now() });
@@ -17,7 +24,7 @@ async function setup(t, options = {}) {
   });
   const receiverUrl = await serve(t, receiver);
   const app = createApp({ ...config, timeoutMs: 80, callbackUrl: `${receiverUrl}/callback`,
-    callbackToken: 'salesforce-private-token', ...options });
+    salesforceClientId: 'salesforce-client', salesforceClientSecret: 'salesforce-secret', ...options });
   t.after(() => app.locals.dispose());
   const url = await serve(t, app);
   const request = async (headers = {}, body = payload) => {
@@ -25,7 +32,12 @@ async function setup(t, options = {}) {
     return { code: response.status, body: await response.json() };
   };
   const trace = async (testId = 'default') => (await fetch(`${url}/__mock/attempts?testId=${testId}`, { headers: { 'X-Admin-Key': config.adminKey } })).json();
-  return { url, request, trace, received };
+  const transaction = async (merchantRef = payload.merchantRef, testId = 'default') => {
+    const query = new URLSearchParams({ merchantRef, testId });
+    const response = await fetch(`${url}/__mock/transactions?${query}`, { headers: { 'X-Admin-Key': config.adminKey } });
+    return { code: response.status, body: await response.json() };
+  };
+  return { url, request, trace, transaction, received };
 }
 
 export async function serve(t, app) {
@@ -188,6 +200,58 @@ test('protected attempt tracing excludes secrets and private payload', async t =
   }
 });
 
+test('protected transaction trace correlates a refund without exposing credentials', async t => {
+  const { request, transaction } = await setup(t);
+  const accepted = await request();
+  await request();
+
+  const result = await transaction();
+  assert.equal(result.code, 200);
+  assert.deepEqual(result.body.payment, {
+    refundId: accepted.body.refundId,
+    initialStatus: 'SUCCESS',
+    finalStatus: 'SUCCESS',
+    scenario: 'SUCCESS',
+    acceptedAt: result.body.payment.acceptedAt,
+  });
+  assert.ok(Date.parse(result.body.payment.acceptedAt));
+  assert.equal(result.body.merchantRef, payload.merchantRef);
+  assert.deepEqual(result.body.attempts.map(attempt => ({
+    responseCode: attempt.responseCode,
+    accepted: attempt.accepted,
+    replayed: attempt.replayed,
+  })), [
+    { responseCode: 200, accepted: true, replayed: false },
+    { responseCode: 200, accepted: false, replayed: true },
+  ]);
+  assert.deepEqual(result.body.callbackAttempts, []);
+  for (const secret of Object.values(config)) assert.ok(!JSON.stringify(result.body).includes(secret));
+});
+
+test('transaction trace shows pre-acceptance failures by merchant reference', async t => {
+  const { request, transaction } = await setup(t);
+  assert.equal((await request({ 'X-Mock-Scenario': 'HTTP_503' })).code, 503);
+
+  const result = await transaction();
+  assert.equal(result.code, 200);
+  assert.equal(result.body.payment, null);
+  assert.equal(result.body.attempts.length, 1);
+  assert.equal(result.body.attempts[0].scenario, 'HTTP_503');
+  assert.equal(result.body.attempts[0].responseCode, 503);
+});
+
+test('transaction trace requires admin access and valid lookup values', async t => {
+  const { url, transaction } = await setup(t);
+  const endpoint = `${url}/__mock/transactions`;
+  assert.equal((await fetch(`${endpoint}?merchantRef=${payload.merchantRef}`)).status, 401);
+  assert.equal((await fetch(`${endpoint}?merchantRef=`, { headers: { 'X-Admin-Key': config.adminKey } })).status, 400);
+  assert.equal((await fetch(`${endpoint}?merchantRef=${payload.merchantRef}&testId=`, { headers: { 'X-Admin-Key': config.adminKey } })).status, 400);
+  assert.deepEqual(await transaction('RR-UNKNOWN'), {
+    code: 404,
+    body: { errorCode: 'TRANSACTION_NOT_FOUND' },
+  });
+});
+
 test('startup requires distinct configured credentials', () => {
   assert.throws(() => createApp({ payhubToken: '', adminKey: '' }));
   assert.throws(() => createApp({ payhubToken: 'same', adminKey: 'same' }));
@@ -304,7 +368,7 @@ test('X-Mock-Delay-Ms delays response but acceptance remains atomic', async t =>
 
 for (const scenario of ['PENDING_SUCCESS', 'PENDING_FAILED', 'DUPLICATE_CALLBACK']) {
   test(`${scenario} delivers authenticated final callbacks once per acceptance`, async t => {
-    const { request, trace, received } = await setup(t);
+    const { request, trace, transaction, received } = await setup(t);
     const started = performance.now();
     const pending = await request({ 'X-Mock-Scenario': scenario, 'X-Mock-Callback-Delay-Ms': '40' });
     assert.equal(pending.body.status, 'PENDING');
@@ -334,6 +398,10 @@ for (const scenario of ['PENDING_SUCCESS', 'PENDING_FAILED', 'DUPLICATE_CALLBACK
       assert.ok(callback.durationMs >= 0);
       assert.ok(Date.parse(callback.finishedAt));
     }
+    const demo = await transaction();
+    assert.equal(demo.body.payment.initialStatus, 'PENDING');
+    assert.equal(demo.body.payment.finalStatus, status);
+    assert.equal(demo.body.callbackAttempts.length, count);
     for (const secret of ['salesforce-private-token', payload.merchantRef, payload.orderNumber]) {
       assert.ok(!JSON.stringify(log).includes(secret));
     }
@@ -375,17 +443,17 @@ test('callback network failures and timeouts do not change accepted response', a
 });
 
 test('PENDING without callback configuration fails before acceptance', async t => {
-  const { request, trace } = await setup(t, { callbackUrl: '', callbackToken: '' });
+  const { request, trace } = await setup(t, { callbackUrl: '', salesforceClientId: '', salesforceClientSecret: '' });
   assert.deepEqual(await request({ 'X-Mock-Scenario': 'PENDING_SUCCESS' }), { code: 503, body: { errorCode: 'CALLBACK_NOT_CONFIGURED' } });
   assert.equal((await trace()).acceptedCount, 0);
 });
 
 test('callback configuration rejects unsafe URLs and missing credentials', () => {
   for (const callbackUrl of ['http://example.com/callback', 'https://user:pass@example.com', 'file:///tmp/out', 'not-a-url', 'https://example.com/#fragment']) {
-    assert.throws(() => createApp({ ...config, callbackUrl, callbackToken: 'token' }));
+    assert.throws(() => createApp({ ...config, callbackUrl, salesforceClientId: 'id', salesforceClientSecret: 'secret' }));
   }
-  assert.throws(() => createApp({ ...config, callbackUrl: 'https://example.com', callbackToken: '' }));
-  assert.throws(() => createApp({ ...config, callbackUrl: '', callbackToken: 'token' }));
+  assert.throws(() => createApp({ ...config, callbackUrl: 'https://example.com', salesforceClientId: '', salesforceClientSecret: '' }));
+  assert.throws(() => createApp({ ...config, callbackUrl: '', salesforceClientId: 'id', salesforceClientSecret: 'secret' }));
 });
 
 test('malformed JSON, large payloads and unsupported content types are safely traced', async t => {
