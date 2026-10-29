@@ -87,6 +87,7 @@ export function createApp({
   const runs = new Map();
   const timers = new Set();
   const controllers = new Set();
+  let defaultScenario = "SUCCESS";
 
   app.locals.dispose = () => {
     for (const timer of timers) clearTimeout(timer);
@@ -455,6 +456,51 @@ export function createApp({
     });
   });
 
+  app.get("/__mock/scenario", (req, res) => {
+    res.set("Cache-Control", "no-store");
+
+    if (!matches(req.get("X-Admin-Key"), adminKey)) {
+      return res.status(401).json({ errorCode: "UNAUTHORIZED" });
+    }
+
+    res.json({ scenario: defaultScenario });
+  });
+
+  app.put(
+    "/__mock/scenario",
+    express.json({ limit: "1kb" }),
+    (req, res) => {
+      res.set("Cache-Control", "no-store");
+
+      if (!matches(req.get("X-Admin-Key"), adminKey)) {
+        return res.status(401).json({ errorCode: "UNAUTHORIZED" });
+      }
+
+      if (
+        !req.body ||
+        Array.isArray(req.body) ||
+        Object.keys(req.body).length !== 1 ||
+        !SCENARIOS.includes(req.body.scenario)
+      ) {
+        return res.status(400).json({ errorCode: "INVALID_SCENARIO" });
+      }
+
+      defaultScenario = req.body.scenario;
+      res.json({ scenario: defaultScenario });
+    },
+  );
+
+  app.delete("/__mock/scenario", (req, res) => {
+    res.set("Cache-Control", "no-store");
+
+    if (!matches(req.get("X-Admin-Key"), adminKey)) {
+      return res.status(401).json({ errorCode: "UNAUTHORIZED" });
+    }
+
+    defaultScenario = "SUCCESS";
+    res.json({ scenario: defaultScenario });
+  });
+
   app.use("/v1/refunds", (req, res, next) => {
     const id = req.get("X-Mock-Test-Id") ?? "default";
     const run = runFor(validText(id, 100) ? id : "__invalid_test_id");
@@ -562,11 +608,13 @@ export function createApp({
       return res.json(merchant.response);
     }
 
-    const requested = req.get("X-Mock-Scenario");
+    const requestedHeader = req.get("X-Mock-Scenario");
 
-    if (requested !== undefined && !SCENARIOS.includes(requested)) {
+    if (requestedHeader !== undefined && !SCENARIOS.includes(requestedHeader)) {
       return fail(400, "INVALID_SCENARIO");
     }
+
+    const requested = requestedHeader ?? existing?.scenario ?? defaultScenario;
 
     const delayMs = readDelay(req, "X-Mock-Delay-Ms", existing?.delayMs ?? 0);
 
@@ -582,7 +630,7 @@ export function createApp({
 
     if (
       existing &&
-      requested !== undefined &&
+      requestedHeader !== undefined &&
       requested !== existing.scenario
     ) {
       return fail(409, "SCENARIO_CONFLICT");
@@ -590,7 +638,7 @@ export function createApp({
 
     const record = existing ?? {
       fingerprint,
-      scenario: requested ?? "SUCCESS",
+      scenario: requested,
       delayMs,
       callbackDelayMs,
       step: 0,

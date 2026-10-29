@@ -23,13 +23,15 @@ in README.md, not asserted as additional BRD requirements.
 
 1. Configure HTTPS Named Credential and valid Salesforce callback token as described
    in README.md. Verify health before running a scenario.
-2. Use a fresh X-Mock-Test-Id for each independent UAT case; reuse its key, namespace
+2. For Salesforce callouts without mock headers, set the protected global scenario,
+   run the case serially, then reset it to SUCCESS. The setting affects only new keys.
+3. Use a fresh X-Mock-Test-Id for each independent UAT case; reuse its key, namespace
    and payload for retries. The test ID is exclusively a mock namespace, not PayHub API.
-3. Capture protected traces alongside Salesforce records/logs. Callback HTTP 2xx means
+4. Capture protected traces alongside Salesforce records/logs. Callback HTTP 2xx means
    transport acceptance; it does not prove Salesforce's final business effects.
-4. Observe Salesforce outcomes in the last column. No mock test establishes those
+5. Observe Salesforce outcomes in the last column. No mock test establishes those
    outcomes. No Salesforce org was contacted by this project's automated tests.
-5. If the process sleeps/restarts, discard the run's expectations and restart the
+6. If the process sleeps/restarts, discard the run's expectations and restart the
    test with a fresh namespace. All state and callback schedules are RAM-only.
 
 Commands: `npm test` runs the fast native node:test suite; `npm run test:integration`

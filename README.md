@@ -110,6 +110,28 @@ BRD was not provided. Validation details and 409 errors are explicit mock conven
 
 ## Header controls
 
+### Global demo scenario
+
+An operator can set the default scenario for all new requests that do not provide an
+`X-Mock-Scenario` header. This is useful for Salesforce, whose production callout does
+not send mock headers:
+
+```sh
+curl -X PUT "$PAYHUB_URL/__mock/scenario" \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  --data '{"scenario":"TIMEOUT"}'
+
+curl "$PAYHUB_URL/__mock/scenario" -H "X-Admin-Key: $ADMIN_KEY"
+curl -X DELETE "$PAYHUB_URL/__mock/scenario" -H "X-Admin-Key: $ADMIN_KEY"
+```
+
+`PUT` accepts any exact scenario from the table below. `DELETE` resets the default to
+`SUCCESS`. The setting is global to the running process, protected by `X-Admin-Key`,
+and disappears on restart or deployment. An explicit request header takes precedence.
+Changing the default never changes an existing key's scenario or an accepted refund.
+Run UAT cases serially while a non-SUCCESS global scenario is active.
+
 | Header | Meaning |
 | --- | --- |
 | `X-Mock-Scenario` | Exact uppercase scenario below; first valid request defaults to SUCCESS |

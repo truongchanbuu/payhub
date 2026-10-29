@@ -252,6 +252,54 @@ test('transaction trace requires admin access and valid lookup values', async t 
   });
 });
 
+test('admin can set and reset the default scenario for new requests', async t => {
+  const { url, request } = await setup(t);
+  const endpoint = `${url}/__mock/scenario`;
+  const admin = { 'X-Admin-Key': config.adminKey };
+
+  assert.equal((await fetch(endpoint)).status, 401);
+  assert.deepEqual(await (await fetch(endpoint, { headers: admin })).json(), { scenario: 'SUCCESS' });
+
+  const updated = await fetch(endpoint, {
+    method: 'PUT',
+    headers: { ...admin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scenario: 'TIMEOUT' }),
+  });
+  assert.equal(updated.status, 200);
+  assert.deepEqual(await updated.json(), { scenario: 'TIMEOUT' });
+  assert.equal((await request()).code, 504);
+  assert.equal((await request({ 'X-Mock-Test-Id': 'another' })).code, 504);
+  assert.equal((await request({
+    'Idempotency-Key': 'success-key',
+    'X-Mock-Test-Id': 'explicit',
+    'X-Mock-Scenario': 'SUCCESS',
+  })).code, 200);
+
+  const reset = await fetch(endpoint, { method: 'DELETE', headers: admin });
+  assert.equal(reset.status, 200);
+  assert.deepEqual(await reset.json(), { scenario: 'SUCCESS' });
+  assert.equal((await request({
+    'Idempotency-Key': 'new-key',
+    'X-Mock-Test-Id': 'reset',
+  })).code, 200);
+});
+
+test('default scenario validation cannot alter existing request sequences', async t => {
+  const { url, request } = await setup(t);
+  const endpoint = `${url}/__mock/scenario`;
+  const headers = { 'X-Admin-Key': config.adminKey, 'Content-Type': 'application/json' };
+
+  assert.equal((await request({ 'X-Mock-Scenario': 'RETRY_503_2_SUCCESS' })).code, 503);
+  for (const body of [{ scenario: 'UNKNOWN' }, {}, { scenario: 'TIMEOUT', extra: true }, []]) {
+    const response = await fetch(endpoint, { method: 'PUT', headers, body: JSON.stringify(body) });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { errorCode: 'INVALID_SCENARIO' });
+  }
+  await fetch(endpoint, { method: 'PUT', headers, body: JSON.stringify({ scenario: 'TIMEOUT' }) });
+  assert.equal((await request()).code, 503);
+  assert.equal((await request()).code, 200);
+});
+
 test('startup requires distinct configured credentials', () => {
   assert.throws(() => createApp({ payhubToken: '', adminKey: '' }));
   assert.throws(() => createApp({ payhubToken: 'same', adminKey: 'same' }));

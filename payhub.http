@@ -4,13 +4,41 @@
 # For Render, replace baseUrl with your deployed HTTPS URL.
 @testId = manual-inspection-001
 @merchantRef = HTTP-DEMO-001
+@salesforceMerchantRef = RR-2610-00015
 
 ### Health check
 GET {{baseUrl}}/healthz
 
+### Read the global scenario
+GET {{baseUrl}}/__mock/scenario
+X-Admin-Key: {{$processEnv ADMIN_KEY}}
+
+### Make every new Salesforce refund time out
+# Run UAT cases serially, then reset the scenario below.
+PUT {{baseUrl}}/__mock/scenario
+X-Admin-Key: {{$processEnv ADMIN_KEY}}
+Content-Type: application/json
+
+{
+  "scenario": "TIMEOUT"
+}
+
+### Reset the global scenario to SUCCESS
+DELETE {{baseUrl}}/__mock/scenario
+X-Admin-Key: {{$processEnv ADMIN_KEY}}
+
+### Salesforce transaction timeline by Return Request number
+# Salesforce requests without X-Mock-Test-Id use the "default" namespace.
+GET {{baseUrl}}/__mock/transactions?testId=default&merchantRef={{salesforceMerchantRef}}
+X-Admin-Key: {{$processEnv ADMIN_KEY}}
+
 ### Salesforce traces (requests without X-Mock-Test-Id use "default")
 # Read-only. Save the JSON response before PayHub restarts or redeploys.
 GET {{baseUrl}}/__mock/attempts?testId=default
+X-Admin-Key: {{$processEnv ADMIN_KEY}}
+
+### Transaction timeline for the manual refund below
+GET {{baseUrl}}/__mock/transactions?testId={{testId}}&merchantRef={{merchantRef}}
 X-Admin-Key: {{$processEnv ADMIN_KEY}}
 
 ### Traces for the manual refund below
