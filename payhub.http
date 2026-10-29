@@ -1,4 +1,4 @@
-# VS Code REST Client. Credentials come from the editor process environment.
+# VS Code REST Client. Credentials come from the ignored .env file beside this file.
 # Set PAYHUB_TOKEN and ADMIN_KEY; token requests also need the client credentials.
 @baseUrl = https://payhub-2u1i.onrender.com
 # For Render, replace baseUrl with your deployed HTTPS URL.
@@ -12,17 +12,17 @@ GET {{baseUrl}}/healthz
 ### Refund outcome event snapshot (pretty JSON)
 # Returns the latest retained POS/App demo events and subscriber state.
 GET {{baseUrl}}/__mock/refund-events?limit=20
-X-Admin-Key: {{$processEnv ADMIN_KEY}}
+X-Admin-Key: {{$dotenv ADMIN_KEY}}
 
 ### Live refund outcome event tail (pretty SSE)
 # This request stays open. Stop it after the demo.
 GET {{baseUrl}}/__mock/refund-events/tail
-X-Admin-Key: {{$processEnv ADMIN_KEY}}
+X-Admin-Key: {{$dotenv ADMIN_KEY}}
 Accept: text/event-stream
 
 ### Read the global scenario
 GET {{baseUrl}}/__mock/scenario
-X-Admin-Key: {{$processEnv ADMIN_KEY}}
+X-Admin-Key: {{$dotenv ADMIN_KEY}}
 
 ### Make every new Salesforce refund time out
 # Run UAT cases serially, then reset the scenario below.
@@ -39,7 +39,7 @@ X-Admin-Key: {{$processEnv ADMIN_KEY}}
 # Accepted once; retry replays SUCCESS:  { "scenario": "SUCCESS_THEN_TIMEOUT" }
 # PENDING, then two SUCCESS callbacks:   { "scenario": "DUPLICATE_CALLBACK" }
 PUT {{baseUrl}}/__mock/scenario
-X-Admin-Key: {{$processEnv ADMIN_KEY}}
+X-Admin-Key: {{$dotenv ADMIN_KEY}}
 Content-Type: application/json
 {
   "scenario": "TIMEOUT"
@@ -47,30 +47,30 @@ Content-Type: application/json
 
 ### Reset the global scenario to SUCCESS
 DELETE {{baseUrl}}/__mock/scenario
-X-Admin-Key: {{$processEnv ADMIN_KEY}}
+X-Admin-Key: {{$dotenv ADMIN_KEY}}
 
 ### Salesforce transaction timeline by Return Request number
 # Salesforce requests without X-Mock-Test-Id use the "default" namespace.
 GET {{baseUrl}}/__mock/transactions?testId=default&merchantRef={{salesforceMerchantRef}}
-X-Admin-Key: {{$processEnv ADMIN_KEY}}
+X-Admin-Key: {{$dotenv ADMIN_KEY}}
 
 ### Salesforce traces (requests without X-Mock-Test-Id use "default")
 # Read-only. Save the JSON response before PayHub restarts or redeploys.
 GET {{baseUrl}}/__mock/attempts?testId=default
-X-Admin-Key: {{$processEnv ADMIN_KEY}}
+X-Admin-Key: {{$dotenv ADMIN_KEY}}
 
 ### Transaction timeline for the manual refund below
 GET {{baseUrl}}/__mock/transactions?testId={{testId}}&merchantRef={{merchantRef}}
-X-Admin-Key: {{$processEnv ADMIN_KEY}}
+X-Admin-Key: {{$dotenv ADMIN_KEY}}
 
 ### Traces for the manual refund below
 GET {{baseUrl}}/__mock/attempts?testId={{testId}}
-X-Admin-Key: {{$processEnv ADMIN_KEY}}
+X-Admin-Key: {{$dotenv ADMIN_KEY}}
 
 ### Request an OAuth2 token (optional when PAYHUB_TOKEN is already configured)
 # REST Client encodes the Basic credentials. Use the returned access_token as PAYHUB_TOKEN.
 POST {{baseUrl}}/v1/token
-Authorization: Basic {{$processEnv PAYHUB_CLIENT_ID}} {{$processEnv PAYHUB_CLIENT_SECRET}}
+Authorization: Basic {{$dotenv PAYHUB_CLIENT_ID}} {{$dotenv PAYHUB_CLIENT_SECRET}}
 Content-Type: application/x-www-form-urlencoded
 
 grant_type=client_credentials
@@ -80,7 +80,7 @@ grant_type=client_credentials
 # Repeating this request replays the accepted refund with the same idempotency key.
 # Change testId and merchantRef for a new test. SUCCESS does not send a callback.
 POST {{baseUrl}}/v1/refunds
-Authorization: Bearer {{$processEnv PAYHUB_TOKEN}}
+Authorization: Bearer {{$dotenv PAYHUB_TOKEN}}
 Idempotency-Key: {{merchantRef}}
 X-Mock-Test-Id: {{testId}}
 X-Mock-Scenario: SUCCESS
