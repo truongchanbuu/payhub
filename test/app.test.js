@@ -107,6 +107,21 @@ test('refund event SSE endpoint streams the retained tail and new events', async
   await reader.cancel();
 });
 
+test('refund event SSE endpoint supports a bounded REST Client tail', async t => {
+  const url = await serve(t, createApp(config));
+  const headers = { 'X-Admin-Key': config.adminKey };
+
+  assert.equal((await fetch(`${url}/__mock/refund-events/tail?durationMs=0`, {
+    headers,
+  })).status, 400);
+
+  const response = await fetch(`${url}/__mock/refund-events/tail?durationMs=20`, {
+    headers,
+  });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /event: subscription/);
+});
+
 test('OAuth client credentials return a bearer token usable for refunds', async t => {
   const { url, request, trace } = await setup(t);
   const response = await fetch(`${url}/v1/token`, { method: 'POST', body: new URLSearchParams({

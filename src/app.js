@@ -423,6 +423,16 @@ export function createApp({
       return res.status(401).json({ errorCode: "UNAUTHORIZED" });
     }
 
+    const requestedDurationMs = req.query.durationMs;
+    if (
+      requestedDurationMs !== undefined &&
+      (!/^\d{1,5}$/.test(requestedDurationMs) ||
+        Number(requestedDurationMs) < 1 ||
+        Number(requestedDurationMs) > 60000)
+    ) {
+      return res.status(400).json({ errorCode: "INVALID_DURATION" });
+    }
+
     res.set({
       "Cache-Control": "no-store",
       Connection: "keep-alive",
@@ -445,10 +455,19 @@ export function createApp({
     }, 15000);
     timers.add(keepalive);
 
+    const duration = requestedDurationMs
+      ? setTimeout(() => res.end(), Number(requestedDurationMs))
+      : undefined;
+    if (duration) timers.add(duration);
+
     res.once("close", () => {
       unsubscribe();
       clearInterval(keepalive);
       timers.delete(keepalive);
+      if (duration) {
+        clearTimeout(duration);
+        timers.delete(duration);
+      }
     });
   });
 

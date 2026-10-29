@@ -82,6 +82,10 @@ curl -N "$PAYHUB_URL/__mock/refund-events/tail" \
   -H "X-Admin-Key: $ADMIN_KEY"
 ```
 
+The SSE tail stays open by default. Clients that buffer streaming responses can
+set `durationMs` from 1 to 60000 so the response closes after a bounded demo,
+for example `/__mock/refund-events/tail?durationMs=10000`.
+
 Both endpoints disable caching and require `X-Admin-Key`. Output contains only replay
 ID, request number, `COMPLETED`/`REFUND_FAILED`, integer VND amount, store code, event
 time and receipt time. It excludes OAuth tokens and raw Pub/Sub transport payloads.
