@@ -1,6 +1,6 @@
 # VS Code REST Client. Credentials come from the editor process environment.
 # Set PAYHUB_TOKEN and ADMIN_KEY; token requests also need the client credentials.
-@baseUrl = http://localhost:3000
+@baseUrl = https://payhub-2u1i.onrender.com
 # For Render, replace baseUrl with your deployed HTTPS URL.
 @testId = manual-inspection-001
 @merchantRef = HTTP-DEMO-001
@@ -30,7 +30,6 @@ X-Admin-Key: {{$processEnv ADMIN_KEY}}
 PUT {{baseUrl}}/__mock/scenario
 X-Admin-Key: {{$processEnv ADMIN_KEY}}
 Content-Type: application/json
-
 {
   "scenario": "TIMEOUT"
 }
