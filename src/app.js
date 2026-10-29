@@ -30,6 +30,17 @@ const validText = (value, max = 200) =>
   value.length <= max &&
   value.trim() === value;
 
+const prettyJson = (value) => JSON.stringify(value, null, 2);
+
+const sseMessage = (type, data) => {
+  const lines = prettyJson(data)
+    .split("\n")
+    .map((line) => `data: ${line}`)
+    .join("\n");
+
+  return `event: ${type}\n${lines}\n\n`;
+};
+
 export function createApp({
   payhubToken = process.env.PAYHUB_TOKEN,
   clientId = process.env.PAYHUB_CLIENT_ID,
@@ -402,7 +413,9 @@ export function createApp({
       return res.status(400).json({ errorCode: "INVALID_LIMIT" });
     }
 
-    res.json(refundEventLog.snapshot(limit));
+    res.type("application/json").send(
+      `${prettyJson(refundEventLog.snapshot(limit))}\n`,
+    );
   });
 
   app.get("/__mock/refund-events/tail", (req, res) => {
@@ -419,9 +432,7 @@ export function createApp({
     res.flushHeaders();
 
     const write = ({ type, data }) => {
-      if (!res.destroyed) {
-        res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
-      }
+      if (!res.destroyed) res.write(sseMessage(type, data));
     };
 
     const snapshot = refundEventLog.snapshot();

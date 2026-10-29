@@ -9,6 +9,17 @@
 ### Health check
 GET {{baseUrl}}/healthz
 
+### Refund outcome event snapshot (pretty JSON)
+# Returns the latest retained POS/App demo events and subscriber state.
+GET {{baseUrl}}/__mock/refund-events?limit=20
+X-Admin-Key: {{$processEnv ADMIN_KEY}}
+
+### Live refund outcome event tail (pretty SSE)
+# This request stays open. Stop it after the demo.
+GET {{baseUrl}}/__mock/refund-events/tail
+X-Admin-Key: {{$processEnv ADMIN_KEY}}
+Accept: text/event-stream
+
 ### Read the global scenario
 GET {{baseUrl}}/__mock/scenario
 X-Admin-Key: {{$processEnv ADMIN_KEY}}

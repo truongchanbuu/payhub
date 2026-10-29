@@ -75,7 +75,10 @@ test('refund event snapshot is admin-only and bounded by limit', async t => {
   });
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
-  const body = await response.json();
+  const text = await response.text();
+  assert.match(text, /\n  "subscription": \{/);
+  assert.match(text, /\n    "state": "subscribed"/);
+  const body = JSON.parse(text);
   assert.equal(body.subscription.state, 'subscribed');
   assert.equal(body.retainedCount, 2);
   assert.deepEqual(body.events, [{ replayId: '2', outcome: 'REFUND_FAILED' }]);
@@ -95,11 +98,12 @@ test('refund event SSE endpoint streams the retained tail and new events', async
   const decoder = new TextDecoder();
   const first = decoder.decode((await reader.read()).value);
   assert.match(first, /event: subscription/);
+  assert.match(first, /data: \{\ndata:   "state": "disabled"/);
 
   eventLog.record({ replayId: '10', requestNumber: 'RR-DEMO' });
   const next = decoder.decode((await reader.read()).value);
   assert.match(next, /event: refund/);
-  assert.match(next, /RR-DEMO/);
+  assert.match(next, /data:   "requestNumber": "RR-DEMO"/);
   await reader.cancel();
 });
 
