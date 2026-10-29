@@ -12,6 +12,7 @@
     "test:integration": "node --test integration/timeout-check.js"
   },
   "dependencies": {
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "salesforce-pubsub-api-client": "^5.6.2"
   }
 }

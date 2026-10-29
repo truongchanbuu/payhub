@@ -10,6 +10,7 @@ in README.md, not asserted as additional BRD requirements.
 | --- | --- | --- |
 | INT-03 | POST /v1/refunds; Bearer authentication; key/payload/currency/amount validation; SUCCESS/PENDING, 422, 500/503 and delayed responses. Fast contract and all-scenario tests. | Request mapping, Named Credential, actual endpoint, response parsing and persistence. |
 | INT-04 | Authenticated fixed-destination final SUCCESS/FAILED callbacks; refund/merchant correlation; ISO timestamp and CARD_CLOSED; exact duplicate payload. Callback tests verify auth, delays, errors and blocked redirects. | Existing callback handler accepts token, correlates correct Refund record, validates final status and ignores duplicate final deliveries. |
+| INT-05 / FR-13 | Optional Pub/Sub API subscriber receives `/event/Refund_Outcome__e` as a POS/App simulator. Admin-only JSON and SSE tails expose sanitized request number, outcome, amount, store code, occurrence time and replay ID. Local tests use a fake client. | Deploy and enable the subscriber, grant the integration user event read/API access, publish after a committed refund, and observe the event from the target org. |
 | BR-12 | HTTP_500, HTTP_503, both retry sequences, TIMEOUT and SUCCESS_THEN_TIMEOUT. Per-attempt counters and traces. Fast tests plus a separate real 10-second client timeout against the entry point. | SmartReturn timeout is 10000 ms; retryable classification, retry schedule/limits and stable idempotency key across actual retries. |
 | BR-13 | Atomic key/merchant deduplication, payload conflicts, stable refund IDs and immutable accepted response. Concurrent SUCCESS/PENDING tests and lost-response replay prove one accepted refund. | Salesforce persists one refund outcome and creates no duplicate downstream work, even with duplicate callbacks/retries. |
 | BR-14 | Protected read-only traces include attempts, response codes, timestamps, durations, hashed key, acceptance/replay flags and callback outcomes. A merchant-reference lookup returns a sanitized transaction timeline for UAT. Auth/privacy/logging tests. | Salesforce records each attempt and correlates outcomes with its Refund record and support logs. |
@@ -27,11 +28,13 @@ in README.md, not asserted as additional BRD requirements.
    run the case serially, then reset it to SUCCESS. The setting affects only new keys.
 3. Use a fresh X-Mock-Test-Id for each independent UAT case; reuse its key, namespace
    and payload for retries. The test ID is exclusively a mock namespace, not PayHub API.
-4. Capture protected traces alongside Salesforce records/logs. Callback HTTP 2xx means
+4. For INT-05, enable the optional subscriber and tail `/__mock/refund-events/tail`
+   before completing the Salesforce refund.
+5. Capture protected traces alongside Salesforce records/logs. Callback HTTP 2xx means
    transport acceptance; it does not prove Salesforce's final business effects.
-5. Observe Salesforce outcomes in the last column. No mock test establishes those
+6. Observe Salesforce outcomes in the last column. No mock test establishes those
    outcomes. No Salesforce org was contacted by this project's automated tests.
-6. If the process sleeps/restarts, discard the run's expectations and restart the
+7. If the process sleeps/restarts, discard the run's expectations and restart the
    test with a fresh namespace. All state and callback schedules are RAM-only.
 
 Commands: `npm test` runs the fast native node:test suite; `npm run test:integration`

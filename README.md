@@ -31,14 +31,60 @@ Node 24 is an [LTS release](https://nodejs.org/en/about/previous-releases).
 | `PAYHUB_CLIENT_SECRET` | OAuth2 client secret used by Salesforce |
 | `ADMIN_KEY` | Required distinct secret for read-only tracing |
 | `SALESFORCE_CALLBACK_URL` | Full existing Salesforce INT-04 HTTPS endpoint |
-| `SALESFORCE_CLIENT_ID` | OAuth client ID for the Salesforce callback integration user |
-| `SALESFORCE_CLIENT_SECRET` | OAuth client secret for the Salesforce callback integration user |
+| `SALESFORCE_CLIENT_ID` | OAuth client ID shared by callback delivery and the optional event subscriber |
+| `SALESFORCE_CLIENT_SECRET` | OAuth client secret shared by callback delivery and the optional event subscriber |
+| `SALESFORCE_REFUND_EVENTS_ENABLED` | `true` enables the POS/App demo subscriber; default `false` |
+| `SALESFORCE_LOGIN_URL` | Salesforce My Domain HTTPS URL used by the event subscriber |
 
-Callback URL/client credentials are optional together; incomplete configuration fails startup. PENDING
-scenarios return pre-acceptance 503 `CALLBACK_NOT_CONFIGURED` when both are absent.
+The callback URL requires both client credentials; incomplete callback configuration
+fails startup. The same credentials can exist without a callback when used only by the
+event subscriber. PENDING scenarios return pre-acceptance 503
+`CALLBACK_NOT_CONFIGURED` when the callback URL is absent.
 Plain HTTP callbacks are allowed only to localhost/loopback for local testing.
 No incoming header or payload can override the callback destination. Redirects are
 never followed. Tokens, callback response bodies and private payloads are not logged.
+
+## INT-05 POS/App event demo
+
+The optional demo subscriber uses Salesforce
+[Pub/Sub API](https://developer.salesforce.com/docs/platform/pub-sub-api/guide/intro.html)
+to receive
+`/event/Refund_Outcome__e` from the latest event onward. It represents an external
+POS/App streaming client; it is not part of PayHub payment processing. Enable it with:
+
+```properties
+SALESFORCE_REFUND_EVENTS_ENABLED=true
+SALESFORCE_LOGIN_URL=https://your-domain.my.salesforce.com
+SALESFORCE_CLIENT_ID=your-connected-app-client-id
+SALESFORCE_CLIENT_SECRET=your-connected-app-client-secret
+```
+
+The Connected App must allow the client credentials flow. Its run-as integration user
+needs API access and read access to `Refund_Outcome__e`. Use the org's My Domain URL so
+the connection remains stable through instance changes. The subscriber reconnects after
+a stream ends and retains only the latest 100 sanitized events in RAM. Restarting or
+redeploying clears the tail; it intentionally starts at `LATEST` and does not replay old
+events. Salesforce documents this external-client pattern in
+[Subscribe to Platform Event Notifications with Pub/Sub API](https://developer.salesforce.com/docs/platform/platform-events/guide/platform-events-subscribe-pubsub-api.html).
+
+Read the current snapshot:
+
+```sh
+curl "$PAYHUB_URL/__mock/refund-events?limit=20" \
+  -H "X-Admin-Key: $ADMIN_KEY"
+```
+
+Keep a terminal open while completing a refund to see the subscription state and each
+new outcome in real time:
+
+```sh
+curl -N "$PAYHUB_URL/__mock/refund-events/tail" \
+  -H "X-Admin-Key: $ADMIN_KEY"
+```
+
+Both endpoints disable caching and require `X-Admin-Key`. Output contains only replay
+ID, request number, `COMPLETED`/`REFUND_FAILED`, integer VND amount, store code, event
+time and receipt time. It excludes OAuth tokens and raw Pub/Sub transport payloads.
 
 ## Token endpoint
 
@@ -307,8 +353,8 @@ To activate:
    Connecting by a public repository URL alone
    does not enable Render's automatic deployment integration.
 4. Set PAYHUB_TOKEN and ADMIN_KEY in Render, plus the Salesforce callback URL, client ID
-   and client secret
-   when needed. These runtime secrets do not belong in GitHub CI or source control.
+   and client secret when needed. To demo INT-05, also set the My Domain login URL and
+   enable refund events. These runtime secrets do not belong in GitHub CI or source control.
 5. Run CI for the initial `main` commit and confirm it passes before creating the
    first deployment. The Blueprint's initial provisioning and later manual deploys
    must be checked separately; the CI gate controls subsequent automatic code deploys.
@@ -328,8 +374,8 @@ RAM state and pending callbacks, so start a fresh UAT run after deployments.
 
 1. Make this repository available to your Render account through your approved Git
    workflow. No remote push or live deployment was performed by this task.
-2. Create a Blueprint from `render.yaml`, select Free, and provide the four environment
-   values. Leave both Salesforce values empty if callbacks are unnecessary.
+2. Create a Blueprint from `render.yaml`, select Free, and provide the required PayHub
+   values. Leave optional Salesforce values empty when callbacks and event demo are unused.
 3. Verify the assigned HTTPS URL with `/healthz`, then a refund and protected trace.
    Use that verified base URL in Salesforce. Do not use an illustrative URL as live.
 4. Before every UAT run, wake the service, wait for health 200, choose a fresh test ID,
@@ -344,7 +390,8 @@ assigned HTTPS address are provided by Render. Configuration follows the
 [Blueprint YAML reference](https://render.com/docs/blueprint-spec).
 
 No live deployment URL has been verified. Local health and real HTTP behavior were
-verified by automated tests. This mock retains unbounded test traces in RAM until
-restart; use synthetic data and restart between test sessions. It does not schedule
-Salesforce retries, modify Salesforce statuses, create accounting tasks, publish
-Platform Events, or send business notifications. See [BRD coverage](docs/brd-coverage.md).
+verified by automated tests. This mock retains refund traces in RAM until restart; use
+synthetic data and restart between test sessions. It does not schedule Salesforce
+retries, modify Salesforce statuses, create accounting tasks, publish Platform Events,
+or send business notifications. The optional POS/App simulator only subscribes to the
+outcome event. See [BRD coverage](docs/brd-coverage.md).

@@ -2,6 +2,7 @@ import test from 'node:test';
 import express from 'express';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
+import { createRefundEventLog } from '../src/refund-event-log.js';
 
 const config = { payhubToken: 'test-payhub-secret', adminKey: 'test-admin-secret',
   clientId: 'test-client', clientSecret: 'test-client-secret' };
@@ -55,6 +56,51 @@ test('health endpoint', async t => {
   const response = await fetch(`${url}/healthz`);
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { status: 'ok' });
+});
+
+test('refund event snapshot is admin-only and bounded by limit', async t => {
+  const eventLog = createRefundEventLog();
+  eventLog.setSubscription({ state: 'subscribed' });
+  eventLog.record({ replayId: '1', outcome: 'COMPLETED' });
+  eventLog.record({ replayId: '2', outcome: 'REFUND_FAILED' });
+  const url = await serve(t, createApp({ ...config, refundEventLog: eventLog }));
+
+  assert.equal((await fetch(`${url}/__mock/refund-events`)).status, 401);
+  assert.equal((await fetch(`${url}/__mock/refund-events?limit=0`, {
+    headers: { 'X-Admin-Key': config.adminKey },
+  })).status, 400);
+
+  const response = await fetch(`${url}/__mock/refund-events?limit=1`, {
+    headers: { 'X-Admin-Key': config.adminKey },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  const body = await response.json();
+  assert.equal(body.subscription.state, 'subscribed');
+  assert.equal(body.retainedCount, 2);
+  assert.deepEqual(body.events, [{ replayId: '2', outcome: 'REFUND_FAILED' }]);
+});
+
+test('refund event SSE endpoint streams the retained tail and new events', async t => {
+  const eventLog = createRefundEventLog();
+  const url = await serve(t, createApp({ ...config, refundEventLog: eventLog }));
+
+  const response = await fetch(`${url}/__mock/refund-events/tail`, {
+    headers: { 'X-Admin-Key': config.adminKey },
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('Content-Type'), /^text\/event-stream/);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const first = decoder.decode((await reader.read()).value);
+  assert.match(first, /event: subscription/);
+
+  eventLog.record({ replayId: '10', requestNumber: 'RR-DEMO' });
+  const next = decoder.decode((await reader.read()).value);
+  assert.match(next, /event: refund/);
+  assert.match(next, /RR-DEMO/);
+  await reader.cancel();
 });
 
 test('OAuth client credentials return a bearer token usable for refunds', async t => {
@@ -501,7 +547,7 @@ test('callback configuration rejects unsafe URLs and missing credentials', () =>
     assert.throws(() => createApp({ ...config, callbackUrl, salesforceClientId: 'id', salesforceClientSecret: 'secret' }));
   }
   assert.throws(() => createApp({ ...config, callbackUrl: 'https://example.com', salesforceClientId: '', salesforceClientSecret: '' }));
-  assert.throws(() => createApp({ ...config, callbackUrl: '', salesforceClientId: 'id', salesforceClientSecret: 'secret' }));
+  assert.doesNotThrow(() => createApp({ ...config, callbackUrl: '', salesforceClientId: 'id', salesforceClientSecret: 'secret' }));
 });
 
 test('malformed JSON, large payloads and unsupported content types are safely traced', async t => {

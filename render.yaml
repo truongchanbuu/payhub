@@ -22,3 +22,7 @@ services:
         sync: false
       - key: SALESFORCE_CLIENT_SECRET
         sync: false
+      - key: SALESFORCE_REFUND_EVENTS_ENABLED
+        value: "false"
+      - key: SALESFORCE_LOGIN_URL
+        sync: false

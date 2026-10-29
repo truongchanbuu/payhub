@@ -1,5 +1,6 @@
 import express from "express";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createRefundEventLog } from "./refund-event-log.js";
 
 export const SCENARIOS = Object.freeze([
   "SUCCESS",
@@ -39,6 +40,7 @@ export function createApp({
   salesforceClientId = process.env.SALESFORCE_CLIENT_ID,
   salesforceClientSecret = process.env.SALESFORCE_CLIENT_SECRET,
   callbackTimeoutMs = 5000,
+  refundEventLog = createRefundEventLog(),
 } = {}) {
   if (
     !validText(payhubToken) ||
@@ -57,7 +59,7 @@ export function createApp({
     );
   }
 
-  if (callbackUrl || salesforceClientId || salesforceClientSecret) {
+  if (callbackUrl) {
     let url;
     try {
       url = new URL(callbackUrl);
@@ -257,6 +259,7 @@ export function createApp({
   }
 
   app.disable("x-powered-by");
+  app.locals.refundEventLog = refundEventLog;
 
   app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
 
@@ -378,6 +381,63 @@ export function createApp({
           )
         : [],
       callbackAttempts: run?.callbacks ?? [],
+    });
+  });
+
+  app.get("/__mock/refund-events", (req, res) => {
+    res.set("Cache-Control", "no-store");
+
+    if (!matches(req.get("X-Admin-Key"), adminKey)) {
+      return res.status(401).json({ errorCode: "UNAUTHORIZED" });
+    }
+
+    const requestedLimit = req.query.limit ?? "100";
+
+    if (!/^\d{1,3}$/.test(requestedLimit)) {
+      return res.status(400).json({ errorCode: "INVALID_LIMIT" });
+    }
+
+    const limit = Number(requestedLimit);
+    if (limit < 1 || limit > 100) {
+      return res.status(400).json({ errorCode: "INVALID_LIMIT" });
+    }
+
+    res.json(refundEventLog.snapshot(limit));
+  });
+
+  app.get("/__mock/refund-events/tail", (req, res) => {
+    if (!matches(req.get("X-Admin-Key"), adminKey)) {
+      return res.status(401).json({ errorCode: "UNAUTHORIZED" });
+    }
+
+    res.set({
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+      "Content-Type": "text/event-stream",
+      "X-Accel-Buffering": "no",
+    });
+    res.flushHeaders();
+
+    const write = ({ type, data }) => {
+      if (!res.destroyed) {
+        res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+      }
+    };
+
+    const snapshot = refundEventLog.snapshot();
+    write({ type: "subscription", data: snapshot.subscription });
+    for (const event of snapshot.events) write({ type: "refund", data: event });
+
+    const unsubscribe = refundEventLog.subscribe(write);
+    const keepalive = setInterval(() => {
+      if (!res.destroyed) res.write(": keepalive\n\n");
+    }, 15000);
+    timers.add(keepalive);
+
+    res.once("close", () => {
+      unsubscribe();
+      clearInterval(keepalive);
+      timers.delete(keepalive);
     });
   });
 
