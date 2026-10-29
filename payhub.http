@@ -1,0 +1,45 @@
+# VS Code REST Client. Credentials come from the editor process environment.
+# Set PAYHUB_TOKEN and ADMIN_KEY; token requests also need the client credentials.
+@baseUrl = http://localhost:3000
+# For Render, replace baseUrl with your deployed HTTPS URL.
+@testId = manual-inspection-001
+@merchantRef = HTTP-DEMO-001
+
+### Health check
+GET {{baseUrl}}/healthz
+
+### Salesforce traces (requests without X-Mock-Test-Id use "default")
+# Read-only. Save the JSON response before PayHub restarts or redeploys.
+GET {{baseUrl}}/__mock/attempts?testId=default
+X-Admin-Key: {{$processEnv ADMIN_KEY}}
+
+### Traces for the manual refund below
+GET {{baseUrl}}/__mock/attempts?testId={{testId}}
+X-Admin-Key: {{$processEnv ADMIN_KEY}}
+
+### Request an OAuth2 token (optional when PAYHUB_TOKEN is already configured)
+# REST Client encodes the Basic credentials. Use the returned access_token as PAYHUB_TOKEN.
+POST {{baseUrl}}/v1/token
+Authorization: Basic {{$processEnv PAYHUB_CLIENT_ID}} {{$processEnv PAYHUB_CLIENT_SECRET}}
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+
+### Create a manual mock refund (writes state; does not submit a Salesforce inspection)
+# Keep real Salesforce RR codes out of this manual request.
+# Repeating this request replays the accepted refund with the same idempotency key.
+# Change testId and merchantRef for a new test. SUCCESS does not send a callback.
+POST {{baseUrl}}/v1/refunds
+Authorization: Bearer {{$processEnv PAYHUB_TOKEN}}
+Idempotency-Key: {{merchantRef}}
+X-Mock-Test-Id: {{testId}}
+X-Mock-Scenario: SUCCESS
+Content-Type: application/json
+
+{
+  "merchantRef": "{{merchantRef}}",
+  "orderNumber": "HTTP-DEMO-ORDER-001",
+  "amount": 100000,
+  "currency": "VND",
+  "reason": "CUSTOMER_RETURN"
+}
