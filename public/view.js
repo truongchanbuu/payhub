@@ -177,3 +177,98 @@ export function render({ reference, testId, transaction, trace, events }) {
   el("sync").textContent =
     `Cập nhật ${new Date().toLocaleTimeString("vi-VN", { hour12: false })}`;
 }
+
+export function renderRequests(requests) {
+  const namespace = el("live-namespace");
+  const selected = namespace.value;
+  const namespaces = [...new Set(requests.map((item) => item.testId))].sort();
+  namespace.replaceChildren(
+    ...["", ...namespaces].map((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value || "Tất cả namespace";
+      return option;
+    }),
+  );
+  namespace.value = namespaces.includes(selected) ? selected : "";
+  const search = el("live-search").value.trim().toLowerCase();
+  const visible = requests
+    .filter(
+      (item) =>
+        (!namespace.value || item.testId === namespace.value) &&
+        (!search || (item.merchantRef ?? "").toLowerCase().includes(search)),
+    )
+    .slice()
+    .reverse();
+  const nodes = visible.map((item) => {
+    const identity = document.createElement("div");
+    const reference = document.createElement(
+      item.merchantRef ? "button" : "span",
+    );
+    reference.textContent = item.merchantRef || "Yêu cầu chưa hợp lệ";
+    if (item.merchantRef) {
+      reference.type = "button";
+      reference.className = "secondary";
+      reference.dataset.reference = item.merchantRef;
+      reference.dataset.namespace = item.testId;
+    }
+    const label = document.createElement("small");
+    label.textContent = item.testId;
+    identity.append(reference, label);
+    const result =
+      item.result?.status ??
+      item.result?.errorCode ??
+      (item.disconnected
+        ? "Ngắt kết nối"
+        : item.replayed
+          ? "Replay"
+          : item.accepted
+            ? "Accepted"
+            : item.responseCode
+              ? `HTTP ${item.responseCode}`
+              : "Đang xử lý");
+    return row([
+      time(item.startedAt),
+      identity,
+      item.scenario ?? "—",
+      item.responseCode ?? "—",
+      badge(result),
+      duration(item.durationMs),
+    ]);
+  });
+  el("live-requests").replaceChildren(...nodes);
+  el("live-table").hidden = !nodes.length;
+  el("live-empty").hidden = Boolean(nodes.length);
+  el("live-empty").textContent = requests.length
+    ? "Không có request khớp bộ lọc."
+    : "Chưa có request hoàn tiền nào trong phiên PayHub hiện tại.";
+}
+
+export function renderLiveEvents(snapshot) {
+  const state = snapshot?.subscription?.state ?? "unknown";
+  el("live-subscriber").textContent = `Subscriber: ${state}`;
+  el("live-subscriber").className =
+    `badge ${state === "subscribed" ? "success" : "warning"}`;
+  const nodes = (snapshot?.events ?? [])
+    .slice()
+    .reverse()
+    .map((item) => {
+      const node = document.createElement("div");
+      node.className = "event-row";
+      const detail = document.createElement("span");
+      detail.textContent = `${item.requestNumber} · ${item.outcome} · ${time(item.receivedAt)}`;
+      node.append(detail);
+      return node;
+    });
+  if (!nodes.length) {
+    const empty = document.createElement("p");
+    empty.className = "table-empty";
+    empty.textContent =
+      state === "disabled"
+        ? "Subscriber chưa bật trên PayHub."
+        : "Chưa nhận được outcome event.";
+    nodes.push(empty);
+  }
+  el("live-events").replaceChildren(...nodes);
+  el("live-event-state").textContent = "Tự cập nhật mỗi 3 giây";
+}

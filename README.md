@@ -65,6 +65,10 @@ in browser storage, URLs or static files.
    The visible tracker refreshes every three seconds; Salesforce still owns retries.
 5. Verify the final business state in Salesforce and reset the scenario to SUCCESS.
 
+After connecting, the global request and outcome panels refresh every three seconds,
+even before selecting a Return Request. Filter requests by reference or namespace,
+pause the global panels, or click a reference to open its transaction details.
+
 Outcome events require the optional subscriber described below. A successful PayHub
 result, callback HTTP 2xx and Salesforce's persisted state are separate evidence.
 Restart, redeploy or sleep clears all traces and pending callbacks; the console

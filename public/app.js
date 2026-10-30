@@ -1,4 +1,11 @@
-import { el, notice, render, clearTracking } from "./view.js";
+import {
+  el,
+  notice,
+  render,
+  clearTracking,
+  renderRequests,
+  renderLiveEvents,
+} from "./view.js";
 
 let adminKey = "";
 let reference = "";
@@ -8,6 +15,8 @@ let controller;
 let generation = 0;
 let pendingScenario;
 let changingScenario = false;
+let livePaused = false;
+let liveRequests = [];
 
 async function api(path, { method = "GET", body, signal } = {}) {
   const response = await fetch(`/__mock/${path}`, {
@@ -22,7 +31,7 @@ async function api(path, { method = "GET", body, signal } = {}) {
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
-  const result = await response.json();
+  const result = await response.json().catch(() => ({}));
   if (response.status === 404 && result.errorCode === "TRANSACTION_NOT_FOUND")
     return null;
   if (!response.ok) {
@@ -48,6 +57,12 @@ function disconnect() {
   el("merchant-ref").value = "";
   el("active-scenario").textContent = "—";
   clearTracking();
+  liveRequests = [];
+  livePaused = false;
+  el("live-toggle").textContent = "Tạm dừng";
+  el("live-toggle").setAttribute("aria-pressed", "false");
+  renderRequests([]);
+  renderLiveEvents({ events: [], subscription: { state: "disconnected" } });
   el("workspace").hidden = true;
   el("login").hidden = false;
   el("disconnect").hidden = true;
@@ -57,8 +72,7 @@ function disconnect() {
 }
 function schedule() {
   clearTimeout(timer);
-  if (adminKey && reference && !document.hidden)
-    timer = setTimeout(refresh, 3000);
+  if (adminKey && !document.hidden) timer = setTimeout(refresh, 3000);
 }
 async function refresh() {
   if (!adminKey || document.hidden) return;
@@ -72,23 +86,35 @@ async function refresh() {
   el("sync").textContent = "Đang cập nhật…";
   el("refresh").disabled = true;
   try {
-    const [scenario, transaction, trace, events] = await Promise.all([
+    const [scenario, transaction, trace, events, history] = await Promise.all([
       api("scenario", { signal }),
       reference ? api(`transactions?${query}`, { signal }) : null,
       reference
         ? api(`attempts?${new URLSearchParams({ testId })}`, { signal })
         : null,
-      reference ? api("refund-events?limit=100", { signal }) : null,
+      !livePaused || reference
+        ? api("refund-events?limit=100", { signal })
+        : null,
+      !livePaused ? api("requests", { signal }) : null,
     ]);
     if (current.signal.aborted || version !== generation) return;
     el("active-scenario").textContent = scenario.scenario;
+    if (!livePaused) {
+      liveRequests = history?.requests ?? [];
+      renderRequests(liveRequests);
+      renderLiveEvents(events);
+      el("live-state").textContent = "Đang theo dõi · Tự cập nhật mỗi 3 giây";
+    }
     if (reference) render({ reference, testId, transaction, trace, events });
     else el("sync").textContent = "Chưa chọn yêu cầu";
     notice();
   } catch (error) {
     if (current.signal.aborted || version !== generation) return;
     if (error.status === 401) disconnect();
-    else el("sync").textContent = "Chưa cập nhật được · dữ liệu có thể cũ";
+    else {
+      el("sync").textContent = "Chưa cập nhật được · dữ liệu có thể cũ";
+      el("live-state").textContent = "Mất kết nối · Đang thử lại";
+    }
     notice(error.message);
   } finally {
     if (version === generation) {
@@ -115,6 +141,7 @@ el("connect-form").addEventListener("submit", async (event) => {
     el("disconnect").hidden = false;
     notice();
     el("merchant-ref").focus();
+    refresh();
   } catch (error) {
     adminKey = "";
     notice(error.message);
@@ -141,7 +168,7 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     clearTimeout(timer);
     controller?.abort();
-  } else if (adminKey && reference) refresh();
+  } else if (adminKey) refresh();
 });
 function confirmScenario(value, reset = false) {
   if (changingScenario) return;
@@ -188,4 +215,23 @@ el("confirm-dialog").addEventListener("close", async () => {
     el("apply").disabled = false;
     el("reset").disabled = false;
   }
+});
+
+el("live-search").addEventListener("input", () => renderRequests(liveRequests));
+el("live-namespace").addEventListener("change", () =>
+  renderRequests(liveRequests),
+);
+el("live-toggle").addEventListener("click", () => {
+  livePaused = !livePaused;
+  el("live-toggle").textContent = livePaused ? "Tiếp tục" : "Tạm dừng";
+  el("live-toggle").setAttribute("aria-pressed", String(livePaused));
+  el("live-state").textContent = livePaused ? "Đã tạm dừng" : "Đang cập nhật…";
+  if (!livePaused) refresh();
+});
+el("live-requests").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-reference]");
+  if (!button) return;
+  el("merchant-ref").value = button.dataset.reference;
+  el("test-id").value = button.dataset.namespace;
+  el("search-form").requestSubmit();
 });

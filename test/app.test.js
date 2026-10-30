@@ -703,3 +703,23 @@ test('console uses authenticated scenario and monitoring APIs in the refund proc
   assert.deepEqual(await reset.json(), { scenario: 'SUCCESS' });
   assert.equal((await request({ 'Idempotency-Key': 'fresh-key', 'X-Mock-Test-Id': 'fresh-run' })).code, 200);
 });
+
+
+test('global request history shows failed refunds before payment acceptance', async t => {
+  const { url, request } = await setup(t);
+  assert.equal((await fetch(`${url}/__mock/requests`)).status, 401);
+  assert.equal((await request({ 'X-Mock-Scenario': 'HTTP_503' })).code, 503);
+  const response = await fetch(`${url}/__mock/requests`, {
+    headers: { 'X-Admin-Key': config.adminKey },
+  });
+  assert.equal(response.status, 200);
+  const history = await response.json();
+  assert.equal(history.requests.length, 1);
+  const entry = history.requests[0];
+  assert.equal(entry.merchantRef, payload.merchantRef);
+  assert.equal(entry.testId, 'default');
+  assert.equal(entry.responseCode, 503);
+  assert.equal(entry.accepted, false);
+  assert.deepEqual(entry.result, { errorCode: 'SERVICE_UNAVAILABLE' });
+  for (const secret of Object.values(config)) assert.ok(!JSON.stringify(history).includes(secret));
+});
