@@ -632,3 +632,74 @@ test('traces reject malformed testId queries and unknown routes return safe JSON
   assert.equal(response.status, 404);
   assert.deepEqual(await response.json(), { errorCode: 'NOT_FOUND' });
 });
+
+test('console serves only public assets with browser security headers', async t => {
+  const { url } = await setup(t);
+  for (const [path, type] of [
+    ['/', 'text/html'], ['/app.js', 'text/javascript'],
+    ['/view.js', 'text/javascript'], ['/styles.css', 'text/css'],
+  ]) {
+    const response = await fetch(url + path);
+    assert.equal(response.status, 200);
+    assert.ok(response.headers.get('content-type').startsWith(type));
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+    assert.match(response.headers.get('content-security-policy'), /connect-src 'self'/);
+    assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'none'/);
+    const body = await response.text();
+    assert.ok(!body.includes(config.adminKey));
+    assert.ok(!body.includes(config.payhubToken));
+    if (path === '/app.js') {
+      assert.ok(body.includes('fetch(`/__mock/${path}`'));
+      assert.ok(!body.includes('fetch(`/api/'));
+    }
+  }
+  for (const path of ['/.env', '/src/app.js', '/package.json', '/public/index.html', '/%2e%2e/.env', '/missing.js', '/api/refunds']) {
+    const response = await fetch(url + path);
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { errorCode: 'NOT_FOUND' });
+  }
+  assert.equal((await fetch(url + '/', { method: 'POST' })).status, 404);
+});
+
+test('console uses authenticated scenario and monitoring APIs in the refund process', async t => {
+  const { url, request } = await setup(t);
+  const headers = { 'X-Admin-Key': config.adminKey, 'Content-Type': 'application/json' };
+  for (const [path, method] of [
+    ['/__mock/scenario', 'GET'], ['/__mock/scenario', 'PUT'],
+    ['/__mock/scenario', 'DELETE'], ['/__mock/transactions?merchantRef=RR-TEST', 'GET'],
+    ['/__mock/attempts', 'GET'], ['/__mock/refund-events?limit=100', 'GET'],
+  ]) {
+    for (const key of [undefined, 'wrong-admin-key']) {
+      const response = await fetch(url + path, {
+        method,
+        headers: { 'Content-Type': 'application/json', ...(key ? { 'X-Admin-Key': key } : {}) },
+        ...(method === 'PUT' ? { body: JSON.stringify({ scenario: 'HTTP_500' }) } : {}),
+      });
+      assert.equal(response.status, 401);
+    }
+  }
+  const changed = await fetch(url + '/__mock/scenario', {
+    method: 'PUT', headers, body: JSON.stringify({ scenario: 'HTTP_503' }),
+  });
+  assert.equal(changed.status, 200);
+  assert.deepEqual(await changed.json(), { scenario: 'HTTP_503' });
+  assert.equal((await request()).code, 503);
+  assert.deepEqual(await (await fetch(url + '/__mock/scenario', { headers })).json(), { scenario: 'HTTP_503' });
+  const query = new URLSearchParams({ testId: 'default', merchantRef: payload.merchantRef });
+  const transaction = await fetch(`${url}/__mock/transactions?${query}`, { headers });
+  assert.equal(transaction.status, 200);
+  const timeline = await transaction.json();
+  assert.equal(timeline.payment, null);
+  assert.equal(timeline.attempts.length, 1);
+  assert.equal(timeline.attempts[0].responseCode, 503);
+  const trace = await (await fetch(url + '/__mock/attempts?testId=default', { headers })).json();
+  assert.equal(trace.acceptedCount, 0);
+  assert.equal(trace.attempts.length, 1);
+  assert.equal((await fetch(url + '/__mock/refund-events?limit=100', { headers })).status, 200);
+  const reset = await fetch(url + '/__mock/scenario', { method: 'DELETE', headers });
+  assert.equal(reset.status, 200);
+  assert.deepEqual(await reset.json(), { scenario: 'SUCCESS' });
+  assert.equal((await request({ 'Idempotency-Key': 'fresh-key', 'X-Mock-Test-Id': 'fresh-run' })).code, 200);
+});

@@ -1,8 +1,8 @@
 # SmartReturn PayHub mock
 
 One Node.js 24 LTS / Express process, native Map, fetch and node:test. Select behavior
-on each refund request with headers. No scenario setup API or restart is needed.
-Without mock headers, a valid request returns SUCCESS. State, accepted refunds,
+on each refund request with headers, or use the console to change the shared default
+scenario. The default starts at SUCCESS. State, accepted refunds,
 retry counters, pending callbacks and traces disappear on process restart.
 
 ## Run locally
@@ -29,7 +29,7 @@ Node 24 is an [LTS release](https://nodejs.org/en/about/previous-releases).
 | `PAYHUB_TOKEN` | Required Bearer secret for refund requests |
 | `PAYHUB_CLIENT_ID` | OAuth2 client ID used by Salesforce |
 | `PAYHUB_CLIENT_SECRET` | OAuth2 client secret used by Salesforce |
-| `ADMIN_KEY` | Required distinct secret for read-only tracing |
+| `ADMIN_KEY` | Required distinct secret for tracing and demo scenario controls |
 | `SALESFORCE_CALLBACK_URL` | Full existing Salesforce INT-04 HTTPS endpoint |
 | `SALESFORCE_CLIENT_ID` | OAuth client ID shared by callback delivery and the optional event subscriber |
 | `SALESFORCE_CLIENT_SECRET` | OAuth client secret shared by callback delivery and the optional event subscriber |
@@ -43,6 +43,38 @@ event subscriber. PENDING scenarios return pre-acceptance 503
 Plain HTTP callbacks are allowed only to localhost/loopback for local testing.
 No incoming header or payload can override the callback destination. Redirects are
 never followed. Tokens, callback response bodies and private payloads are not logged.
+
+## Refund console
+
+Open <http://localhost:3000/> (or the deployed PayHub HTTPS origin) and enter
+`ADMIN_KEY`. The Vietnamese console is served from `public/` by the same Express
+process as the API. There is no frontend build step, proxy, separate UI service,
+`PAYHUB_URL` environment variable or CORS configuration to maintain.
+
+The static shell is public. Monitoring and scenario controls call the existing
+`/__mock/*` endpoints on the same origin and require the correct Admin Key. The
+key stays only in page memory; reload or disconnect clears it. It is never stored
+in browser storage, URLs or static files.
+
+1. Connect with `ADMIN_KEY`, choose a scenario and confirm **Áp dụng**.
+2. Submit Inspection in Salesforce with a fresh Return Request. Scenario changes
+   affect new transactions across the shared mock; run demo cases serially.
+3. Paste the Return Request number into the tracker. Keep namespace `default`
+   unless the caller sends another `X-Mock-Test-Id`.
+4. Follow attempts, accepted/replayed counts, callback delivery and outcome events.
+   The visible tracker refreshes every three seconds; Salesforce still owns retries.
+5. Verify the final business state in Salesforce and reset the scenario to SUCCESS.
+
+Outcome events require the optional subscriber described below. A successful PayHub
+result, callback HTTP 2xx and Salesforce's persisted state are separate evidence.
+Restart, redeploy or sleep clears all traces and pending callbacks; the console
+cannot recover cleared history.
+
+To consolidate Render deployment, deploy this repository using its existing
+`render.yaml`: `npm ci --omit=dev`, `npm start`, health check `/healthz`. The root
+URL now serves the console while `/v1/*` and `/__mock/*` retain their API paths.
+Keep the backend environment variables listed above; no extra UI variables are
+required. Verify the consolidated service before retiring the separate UI service.
 
 ## INT-05 POS/App event demo
 

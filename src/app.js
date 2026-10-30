@@ -1,4 +1,5 @@
 import express from "express";
+import { fileURLToPath } from "node:url";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createRefundEventLog } from "./refund-event-log.js";
 
@@ -271,6 +272,24 @@ export function createApp({
 
   app.disable("x-powered-by");
   app.locals.refundEventLog = refundEventLog;
+
+  const publicDirectory = fileURLToPath(new URL("../public/", import.meta.url));
+  for (const path of ["/", "/app.js", "/view.js", "/styles.css"]) {
+    app.get(path, (_req, res) => {
+      res.set({
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Content-Security-Policy":
+          "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      });
+      res.sendFile(path === "/" ? "index.html" : path.slice(1), {
+        root: publicDirectory,
+        dotfiles: "deny",
+        cacheControl: false,
+      });
+    });
+  }
 
   app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
 

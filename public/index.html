@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>PayHub · Refund Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Đến nội dung</a>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="PayHub Console"
+        ><span class="brand-mark">P</span
+        ><span>PayHub <small>REFUND CONSOLE</small></span></a
+      >
+      <div class="header-end">
+        <span class="mock-label">MOCK ENVIRONMENT</span
+        ><button id="disconnect" class="quiet" hidden>Ngắt kết nối</button>
+      </div>
+    </header>
+    <main id="main">
+      <section id="login" class="login panel" aria-labelledby="login-title">
+        <p class="eyebrow">SMARTRETURN / DEMO WORKSPACE</p>
+        <h1 id="login-title">Theo dấu một lần hoàn tiền.</h1>
+        <p>
+          Từ lần gửi đầu tiên đến callback cuối cùng. Xem điều gì đã được tiếp
+          nhận, thử lại và xác nhận.
+        </p>
+        <form id="connect-form">
+          <label for="admin-key">Admin Key của PayHub</label>
+          <div class="input-action">
+            <input
+              id="admin-key"
+              type="password"
+              required
+              autocomplete="off"
+              spellcheck="false"
+            /><button id="connect" class="primary">Kết nối</button>
+          </div>
+        </form>
+        <p class="hint">
+          Key chỉ giữ trong bộ nhớ trang; tải lại hoặc ngắt kết nối sẽ xóa key.
+        </p>
+      </section>
+      <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+      <div id="workspace" class="workspace" hidden>
+        <aside class="sidebar">
+          <section
+            class="panel scenario-panel"
+            aria-labelledby="scenario-title"
+          >
+            <p class="eyebrow">01 / CHUẨN BỊ DEMO</p>
+            <h2 id="scenario-title">Kịch bản PayHub</h2>
+            <p class="hint">
+              Đặt trước khi Submit Inspection. Mỗi case dùng một mã yêu cầu mới.
+            </p>
+            <label for="scenario">Kịch bản cho giao dịch mới</label>
+            <select id="scenario">
+              <option value="SUCCESS">Thành công ngay</option>
+              <option value="PENDING_SUCCESS">
+                Pending → callback thành công
+              </option>
+              <option value="PENDING_FAILED">
+                Pending → callback thất bại
+              </option>
+              <option value="SUCCESS_THEN_TIMEOUT">
+                Đã nhận tiền → mất phản hồi
+              </option>
+              <option value="RETRY_503_2_SUCCESS">
+                503 hai lần → thành công lần 3
+              </option>
+              <option value="DUPLICATE_CALLBACK">
+                Gửi callback thành công hai lần
+              </option>
+              <option value="HTTP_500">Lỗi 500 mọi lần gửi</option>
+              <option value="HTTP_503">Lỗi 503 mọi lần gửi</option>
+              <option value="TIMEOUT">Timeout mọi lần gửi</option>
+              <option value="INVALID_AMOUNT">422 — số tiền không hợp lệ</option>
+              <option value="RETRY_503_3">503 ba lần → thành công lần 4</option>
+            </select>
+            <button id="apply" class="primary full">Áp dụng kịch bản</button>
+            <div class="active-scenario">
+              <span>Đang áp dụng trên server</span
+              ><code id="active-scenario">—</code>
+            </div>
+            <button id="reset" class="quiet full">Đặt lại SUCCESS</button>
+          </section>
+          <section class="sidebar-note">
+            <h3>Điểm cần chứng minh</h3>
+            <ol>
+              <li>PayHub tiếp nhận mấy giao dịch?</li>
+              <li>Lần thử lại có replay không?</li>
+              <li>Salesforce đã nhận callback chưa?</li>
+            </ol>
+            <p>
+              Retry do Salesforce quyết định. Đổi scenario không rút ngắn lịch
+              retry.
+            </p>
+          </section>
+        </aside>
+        <div class="content">
+          <section class="panel search-panel" aria-labelledby="search-title">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">02 / THEO DÕI GIAO DỊCH</p>
+                <h1 id="search-title">Refund tracker</h1>
+              </div>
+              <span id="sync" class="sync">Chưa chọn yêu cầu</span>
+            </div>
+            <form id="search-form">
+              <label for="merchant-ref">Mã Return Request</label>
+              <div class="input-action">
+                <input
+                  id="merchant-ref"
+                  type="search"
+                  required
+                  maxlength="200"
+                  placeholder="RR-2610-00553"
+                  autocomplete="off"
+                  spellcheck="false"
+                /><button class="primary">Theo dõi</button>
+              </div>
+              <details class="advanced">
+                <summary>Namespace thử nghiệm</summary>
+                <label for="test-id">X-Mock-Test-Id</label
+                ><input
+                  id="test-id"
+                  value="default"
+                  required
+                  maxlength="100"
+                  autocomplete="off"
+                />
+                <p class="hint">
+                  Salesforce không gửi header này thì dùng <code>default</code>.
+                </p>
+              </details>
+            </form>
+          </section>
+          <section id="empty" class="panel empty">
+            <span class="empty-mark">↗</span>
+            <h2>Chọn một yêu cầu để bắt đầu</h2>
+            <p>
+              Dán mã Return Request từ Salesforce. Trang tự cập nhật mỗi 3 giây
+              khi đang mở.
+            </p>
+          </section>
+          <div id="tracking" hidden>
+            <div class="tracking-heading">
+              <div>
+                <h2 id="tracking-title"></h2>
+                <span id="namespace" class="hint"></span>
+              </div>
+              <button id="refresh" class="secondary">Làm mới</button>
+            </div>
+            <div class="metrics">
+              <article class="metric">
+                <span>Giao dịch được nhận</span
+                ><strong id="accepted-count">0</strong
+                ><small>Một yêu cầu, tối đa một khoản hoàn</small>
+              </article>
+              <article class="metric">
+                <span>Lần gửi HTTP</span><strong id="attempt-count">0</strong
+                ><small>Bao gồm lỗi và thử lại</small>
+              </article>
+              <article class="metric">
+                <span>Lần replay</span><strong id="replay-count">0</strong
+                ><small>Trả lại kết quả đã có</small>
+              </article>
+            </div>
+            <section class="panel outcome-panel">
+              <div>
+                <p class="eyebrow">KẾT QUẢ PHÍA PAYHUB</p>
+                <h3 id="payment-status">Chưa tiếp nhận</h3>
+                <p id="payment-detail" class="hint"></p>
+              </div>
+              <div class="identity">
+                <span>PayHub Refund ID</span><code id="refund-id">—</code>
+              </div>
+            </section>
+            <section class="panel table-panel" aria-labelledby="attempts-title">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">03 / GỬI VÀ THỬ LẠI</p>
+                  <h2 id="attempts-title">Lịch sử lần gửi</h2>
+                </div>
+                <span id="key-status" class="badge">Chưa có key</span>
+              </div>
+              <p id="attempts-empty" class="table-empty">
+                Chưa thấy lần gửi nào. Submit Inspection trên Salesforce, hoặc
+                kiểm tra lại mã và namespace.
+              </p>
+              <div class="table-scroll">
+                <table id="attempts-table" hidden>
+                  <caption class="sr-only">
+                    Các lần Salesforce gửi yêu cầu đến PayHub
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th>Lần</th>
+                      <th>Thời gian</th>
+                      <th>HTTP / Kết nối</th>
+                      <th>Tiếp nhận</th>
+                      <th>Idempotency key · SHA-256</th>
+                      <th>Thời lượng</th>
+                    </tr>
+                  </thead>
+                  <tbody id="attempts"></tbody>
+                </table>
+              </div>
+              <p class="table-foot">
+                Key hiển thị dạng hash. <b>Accepted</b> = nhận giao dịch mới;
+                <b>Replayed</b> = trả lại kết quả cũ.
+              </p>
+            </section>
+            <section
+              class="panel table-panel"
+              aria-labelledby="callbacks-title"
+            >
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">04 / PAYHUB → SALESFORCE</p>
+                  <h2 id="callbacks-title">Callback delivery</h2>
+                </div>
+                <span id="callback-count" class="badge">0 callback</span>
+              </div>
+              <p id="callbacks-empty" class="table-empty">
+                Chưa có callback. Scenario SUCCESS trả kết quả ngay, không gửi
+                callback.
+              </p>
+              <div class="table-scroll">
+                <table id="callbacks-table" hidden>
+                  <caption class="sr-only">
+                    Các lần PayHub gửi callback đến Salesforce
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th>Lần</th>
+                      <th>Thời gian</th>
+                      <th>Kết quả PayHub</th>
+                      <th>Delivery</th>
+                      <th>HTTP</th>
+                      <th>Thời lượng</th>
+                    </tr>
+                  </thead>
+                  <tbody id="callbacks"></tbody>
+                </table>
+              </div>
+              <p class="table-foot">
+                HTTP 2xx chứng minh callback được tiếp nhận ở tầng HTTP. Kiểm
+                tra trạng thái cuối trên Salesforce để xác nhận nghiệp vụ.
+              </p>
+            </section>
+            <section class="panel event-panel" aria-labelledby="events-title">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">05 / SALESFORCE → POS / APP</p>
+                  <h2 id="events-title">Refund outcome event</h2>
+                </div>
+                <span id="subscription" class="badge">—</span>
+              </div>
+              <div id="events"></div>
+              <p class="table-foot">
+                Chỉ các event đã được subscriber nhận và còn trong RAM. Không
+                thấy event không đồng nghĩa refund thất bại.
+              </p>
+            </section>
+          </div>
+        </div>
+      </div>
+    </main>
+    <footer>
+      PAYHUB MOCK
+      <span
+        >State nằm trong RAM; sleep, restart hoặc deploy sẽ xóa traces. Chạy các
+        UAT tuần tự.</span
+      >
+    </footer>
+    <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+      <form method="dialog">
+        <p class="eyebrow">THAY ĐỔI SCENARIO TOÀN MOCK</p>
+        <h2 id="confirm-title">Áp dụng kịch bản mới?</h2>
+        <p id="confirm-description"></p>
+        <p>
+          Chỉ ảnh hưởng giao dịch mới chưa có scenario. Các case khác đang chạy
+          có thể chịu ảnh hưởng.
+        </p>
+        <div class="dialog-actions">
+          <button value="cancel" class="secondary">Hủy</button
+          ><button value="apply" class="primary">Áp dụng</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>
