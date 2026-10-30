@@ -102,6 +102,49 @@ export function createApp({
   const timers = new Set();
   const controllers = new Set();
   let defaultScenario = "SUCCESS";
+  const requests = new Map();
+  const requestListeners = new Set();
+  let requestSequence = 0;
+
+  function publishRequest(attempt, update = {}) {
+    const previous = requests.get(attempt);
+    if (!previous) return;
+    const entry = { ...previous, ...update };
+    requests.set(attempt, entry);
+    for (const listener of requestListeners) listener({ type: "request", data: entry });
+  }
+
+  function stream(req, res, initial, subscribe) {
+    const durationMs = req.query.durationMs;
+    if (durationMs !== undefined &&
+        (typeof durationMs !== "string" || !/^\d{1,5}$/.test(durationMs) ||
+         Number(durationMs) < 1 || Number(durationMs) > 60000)) {
+      return res.status(400).json({ errorCode: "INVALID_DURATION" });
+    }
+    res.set({
+      "Cache-Control": "no-store", Connection: "keep-alive",
+      "Content-Type": "text/event-stream", "X-Accel-Buffering": "no",
+    });
+    res.flushHeaders();
+    const write = ({ type, data }) => {
+      if (res.destroyed) return;
+      // Disconnect slow consumers rather than buffer an unbounded demo stream.
+      if (res.writableLength > 262144) return res.destroy();
+      res.write(sseMessage(type, data));
+    };
+    initial.forEach(write);
+    const unsubscribe = subscribe(write);
+    const keepalive = setInterval(() => res.write(": keepalive\n\n"), 15000);
+    timers.add(keepalive);
+    const duration = durationMs ? setTimeout(() => res.end(), Number(durationMs)) : undefined;
+    if (duration) timers.add(duration);
+    res.once("close", () => {
+      unsubscribe();
+      clearInterval(keepalive);
+      timers.delete(keepalive);
+      if (duration) { clearTimeout(duration); timers.delete(duration); }
+    });
+  }
 
   app.locals.dispose = () => {
     for (const timer of timers) clearTimeout(timer);
@@ -274,7 +317,7 @@ export function createApp({
   app.locals.refundEventLog = refundEventLog;
 
   const publicDirectory = fileURLToPath(new URL("../public/", import.meta.url));
-  for (const path of ["/", "/app.js", "/view.js", "/styles.css"]) {
+  for (const path of ["/", "/app.js", "/view.js", "/live.js", "/styles.css"]) {
     app.get(path, (_req, res) => {
       res.set({
         "Cache-Control": "no-store",
@@ -442,51 +485,25 @@ export function createApp({
       return res.status(401).json({ errorCode: "UNAUTHORIZED" });
     }
 
-    const requestedDurationMs = req.query.durationMs;
-    if (
-      requestedDurationMs !== undefined &&
-      (!/^\d{1,5}$/.test(requestedDurationMs) ||
-        Number(requestedDurationMs) < 1 ||
-        Number(requestedDurationMs) > 60000)
-    ) {
-      return res.status(400).json({ errorCode: "INVALID_DURATION" });
-    }
-
-    res.set({
-      "Cache-Control": "no-store",
-      Connection: "keep-alive",
-      "Content-Type": "text/event-stream",
-      "X-Accel-Buffering": "no",
-    });
-    res.flushHeaders();
-
-    const write = ({ type, data }) => {
-      if (!res.destroyed) res.write(sseMessage(type, data));
-    };
-
     const snapshot = refundEventLog.snapshot();
-    write({ type: "subscription", data: snapshot.subscription });
-    for (const event of snapshot.events) write({ type: "refund", data: event });
+    stream(req, res, [
+      { type: "subscription", data: snapshot.subscription },
+      ...snapshot.events.map(data => ({ type: "refund", data })),
+    ], listener => refundEventLog.subscribe(listener));
+  });
 
-    const unsubscribe = refundEventLog.subscribe(write);
-    const keepalive = setInterval(() => {
-      if (!res.destroyed) res.write(": keepalive\n\n");
-    }, 15000);
-    timers.add(keepalive);
-
-    const duration = requestedDurationMs
-      ? setTimeout(() => res.end(), Number(requestedDurationMs))
-      : undefined;
-    if (duration) timers.add(duration);
-
-    res.once("close", () => {
-      unsubscribe();
-      clearInterval(keepalive);
-      timers.delete(keepalive);
-      if (duration) {
-        clearTimeout(duration);
-        timers.delete(duration);
-      }
+  app.get(["/__mock/requests", "/__mock/requests/tail"], (req, res) => {
+    res.set("Cache-Control", "no-store");
+    if (!matches(req.get("X-Admin-Key"), adminKey)) {
+      return res.status(401).json({ errorCode: "UNAUTHORIZED" });
+    }
+    const snapshot = { capacity: 200, requests: [...requests.values()] };
+    if (req.path === "/__mock/requests") {
+      return res.type("application/json").send(`${prettyJson(snapshot)}\n`);
+    }
+    stream(req, res, [{ type: "snapshot", data: snapshot }], listener => {
+      requestListeners.add(listener);
+      return () => requestListeners.delete(listener);
     });
   });
 
@@ -625,6 +642,26 @@ export function createApp({
     };
 
     run.attempts.push(attempt);
+    requests.set(attempt, {
+      id: ++requestSequence, testId: id, number: attempt.number,
+      method: req.method, startedAt: attempt.startedAt,
+      responseCode: null, finishedAt: null, durationMs: null,
+      merchantRef: null, scenario: null, accepted: false, replayed: false,
+      disconnected: false, result: null,
+    });
+    if (requests.size > 200) requests.delete(requests.keys().next().value);
+    publishRequest(attempt);
+
+    let result = null;
+    const json = res.json;
+    res.json = function(body) {
+      // Retain only mock response fields, never the request body or credentials.
+      result = Object.fromEntries(["refundId", "status", "errorCode"]
+        .filter(key => typeof body?.[key] === "string" && body[key].length <= 200)
+        .map(key => [key, body[key]]));
+      return json.call(this, body);
+    };
+
 
     const started = performance.now();
     let complete = false;
@@ -638,6 +675,14 @@ export function createApp({
       attempt.durationMs =
         Math.round((performance.now() - started) * 1000) / 1000;
       attempt.disconnected = disconnected;
+      publishRequest(attempt, {
+        merchantRef: attempt.merchantRefHash ? req.body.merchantRef : null,
+        scenario: attempt.scenario ?? null,
+        responseCode: attempt.responseCode, finishedAt: attempt.finishedAt,
+        durationMs: attempt.durationMs, disconnected,
+        accepted: attempt.accepted ?? false, replayed: attempt.replayed ?? false,
+        result: disconnected ? null : result,
+      });
     };
 
     res.once("finish", () => finish(false));

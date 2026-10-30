@@ -16,6 +16,8 @@ X-Admin-Key: {{$dotenv ADMIN_KEY}}
 
 ### Observe refund outcome events for 10 seconds (pretty SSE)
 # REST Client displays the response after this bounded stream closes.
+# curl -N "$PAYHUB_URL/__mock/refund-events/tail" \
+# -H "X-Admin-Key: $ADMIN_KEY"
 GET {{baseUrl}}/__mock/refund-events/tail?durationMs=10000
 X-Admin-Key: {{$dotenv ADMIN_KEY}}
 Accept: text/event-stream

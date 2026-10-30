@@ -724,3 +724,10 @@ dialog p {
     white-space: nowrap;
   }
 }
+
+.live-filters { display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; padding: 0 1.5rem 1rem; }
+.live-reference { padding: 0; min-height: 2rem; background: transparent; color: var(--accent); text-align: left; text-decoration: underline; overflow-wrap: anywhere; }
+#live-state, #live-event-state { padding: 0 1.5rem; }
+#live-events { max-height: 24rem; overflow: auto; }
+#live-events .event-row { padding: 1rem 1.5rem; }
+@media (max-width: 600px) { .live-filters { grid-template-columns: 1fr; } }

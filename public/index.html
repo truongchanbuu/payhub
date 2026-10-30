@@ -101,6 +101,31 @@
           </section>
         </aside>
         <div class="content">
+          <section class="panel table-panel" aria-labelledby="live-title">
+            <div class="section-heading">
+              <div><p class="eyebrow">TOÀN BỘ PAYHUB</p><h2 id="live-title">Refund requests · Live tail</h2></div>
+              <button id="live-toggle" class="secondary" aria-pressed="false">Tạm dừng</button>
+            </div>
+            <p id="live-state" class="hint" role="status">Đang kết nối…</p>
+            <div class="live-filters">
+              <div><label for="live-search">Tìm mã Return Request</label><input id="live-search" type="search" placeholder="Tất cả mã yêu cầu" autocomplete="off" /></div>
+              <div><label for="live-namespace">Namespace</label><select id="live-namespace"><option value="">Tất cả namespace</option></select></div>
+            </div>
+            <p id="live-empty" class="table-empty">Chưa có request hoàn tiền nào.</p>
+            <div class="table-scroll"><table id="live-table" hidden>
+              <caption class="sr-only">Các lần gửi refund gần nhất, mới nhất ở trên</caption>
+              <thead><tr><th>Thời gian</th><th>Return Request / Namespace</th><th>Scenario</th><th>HTTP</th><th>Kết quả</th><th>Thời lượng</th></tr></thead>
+              <tbody id="live-requests"></tbody>
+            </table></div>
+            <p class="table-foot">Tối đa 200 lần gửi gần nhất, bao gồm lỗi và replay. Bấm mã để xem chi tiết. Sleep, restart hoặc deploy sẽ xóa lịch sử.</p>
+          </section>
+          <section class="panel event-panel" aria-labelledby="live-events-title">
+            <div class="section-heading"><h2 id="live-events-title">Outcome events · Tất cả yêu cầu</h2><span id="live-subscriber" class="badge">Đang kết nối…</span></div>
+            <p id="live-event-state" class="hint" role="status">Đang kết nối…</p>
+            <div id="live-events"><p class="table-empty">Chưa nhận được outcome event.</p></div>
+            <p class="table-foot">100 event gần nhất nhận từ Salesforce. Event và callback HTTP là hai nguồn xác nhận riêng.</p>
+          </section>
+
           <section class="panel search-panel" aria-labelledby="search-title">
             <div class="section-heading">
               <div>
